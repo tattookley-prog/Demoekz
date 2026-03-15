@@ -97,6 +97,17 @@ fi
 
 declare -A STATUS
 
+# ─── Загрузка модуля 8021q (для совместимости с VLAN-конфигурацией HQ-RTR) ───
+info "Загрузка модуля 8021q..."
+if ! lsmod | grep -q 8021q; then
+    modprobe 8021q 2>/dev/null && ok "Модуль 8021q загружен" \
+        || warn "Не удалось загрузить 8021q (возможно уже встроен в ядро)"
+else
+    ok "Модуль 8021q уже загружен"
+fi
+# Чтобы модуль загружался автоматически при перезагрузке
+echo '8021q' > /etc/modules-load.d/8021q.conf 2>/dev/null || true
+
 # ─── 1. Hostname ──────────────────────────────────────────────────────────────
 info "Устанавливаю hostname: ${HOSTNAME}"
 hostnamectl set-hostname "$HOSTNAME"
@@ -114,7 +125,19 @@ if command -v nmcli &>/dev/null; then
         ipv4.addresses "${ISP_LOCAL}/30" \
         connection.autoconnect yes
     nmcli con up "wan-${WAN_IFACE}"
+elif systemctl is-active systemd-networkd &>/dev/null; then
+    cat > "/etc/systemd/network/10-${WAN_IFACE}.network" <<EOF
+[Match]
+Name=${WAN_IFACE}
+
+[Network]
+Address=${ISP_LOCAL}/30
+EOF
+    systemctl restart systemd-networkd
+    sleep 1
+    ok "Интерфейс $WAN_IFACE настроен через systemd-networkd"
 else
+    warn "Ни nmcli, ни systemd-networkd — настройка временная"
     ip addr flush dev "$WAN_IFACE" 2>/dev/null || true
     ip addr add "${ISP_LOCAL}/30" dev "$WAN_IFACE"
     ip link set "$WAN_IFACE" up
@@ -130,7 +153,19 @@ if command -v nmcli &>/dev/null; then
         ipv4.addresses "${LAN_GW}/24" \
         connection.autoconnect yes
     nmcli con up "lan-${LAN_IFACE}"
+elif systemctl is-active systemd-networkd &>/dev/null; then
+    cat > "/etc/systemd/network/10-${LAN_IFACE}.network" <<EOF
+[Match]
+Name=${LAN_IFACE}
+
+[Network]
+Address=${LAN_GW}/24
+EOF
+    systemctl restart systemd-networkd
+    sleep 1
+    ok "Интерфейс $LAN_IFACE настроен через systemd-networkd"
 else
+    warn "Ни nmcli, ни systemd-networkd — настройка временная"
     ip addr flush dev "$LAN_IFACE" 2>/dev/null || true
     ip addr add "${LAN_GW}/24" dev "$LAN_IFACE"
     ip link set "$LAN_IFACE" up
@@ -139,14 +174,19 @@ ok "LAN ($LAN_IFACE): ${LAN_GW}/24"
 STATUS["ip_lan"]="OK"
 
 # ─── IP forwarding ────────────────────────────────────────────────────────────
+# ─── Включение IP forwarding (надёжный способ для Альт Линукс) ───────────────
 info "Включение IP forwarding..."
+# Записываем в sysctl.d — применяется при загрузке (надёжнее на Альт)
+echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-ipforward.conf
+# Применяем немедленно
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+# Также обновляем sysctl.conf для совместимости
 if grep -q '^net.ipv4.ip_forward' /etc/sysctl.conf 2>/dev/null; then
     sed -i 's/^#*\s*net\.ipv4\.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
 else
     echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
 fi
-sysctl -w net.ipv4.ip_forward=1 >/dev/null
-ok "IP forwarding включён"
+ok "IP forwarding включён (/etc/sysctl.d/99-ipforward.conf)"
 STATUS["ip_forward"]="OK"
 
 # ─── Задание 1: Статическая маршрутизация ─────────────────────────────────────
@@ -270,3 +310,14 @@ echo "  1. Запустите этот скрипт на втором маршр
 echo "  2. Проверьте ping: ping ${REMOTE_LAN%/*} — должен работать через ${NEXT_HOP}"
 echo "  3. Проверьте SSH: ssh ${SSH_USER}@${LAN_GW}"
 echo "  4. Убедитесь, что root-логин по паролю запрещён: ssh root@${LAN_GW} (должен быть отказ)"
+echo
+echo "------------------------------------------------------------"
+echo "  ПРОВЕРКА ПОСЛЕ ПЕРЕЗАГРУЗКИ:"
+echo "------------------------------------------------------------"
+echo "  1. ip addr show $WAN_IFACE — IP ${ISP_LOCAL}/30 должен присутствовать"
+echo "  2. ip addr show $LAN_IFACE — IP ${LAN_GW}/24 должен присутствовать"
+echo "  3. ip route show — маршрут $REMOTE_LAN via $NEXT_HOP должен быть виден"
+echo "  4. cat /proc/sys/net/ipv4/ip_forward — должно быть 1"
+echo "  5. ssh ${SSH_USER}@${LAN_GW} — должно работать, root — запрещён"
+echo "  6. ping $ISP_REMOTE — стык с провайдером работает"
+echo "------------------------------------------------------------"
