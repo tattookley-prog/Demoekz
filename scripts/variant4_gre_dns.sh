@@ -123,6 +123,33 @@ if [[ "$MODE_CHOICE" == "1" || "$MODE_CHOICE" == "3" ]]; then
                 connection.autoconnect yes
             nmcli con up "$TUN_NAME"
             ok "Туннель $TUN_NAME создан через nmcli"
+        elif systemctl is-active systemd-networkd &>/dev/null; then
+            # Резервный вариант через systemd-networkd (переживает перезагрузку)
+            # .netdev — создаёт туннельное устройство (TUN_TYPE: gre или ipip)
+            cat > "/etc/systemd/network/10-${TUN_NAME}.netdev" <<EOF
+[NetDev]
+; Туннельный интерфейс: ${TUN_NAME} (тип: ${TUN_TYPE})
+Name=${TUN_NAME}
+Kind=${TUN_TYPE}
+
+[Tunnel]
+; Локальный WAN IP этого маршрутизатора
+Local=${WAN_LOCAL}
+; Внешний IP удалённого маршрутизатора
+Remote=${WAN_REMOTE}
+EOF
+            # .network — назначает туннельный адрес интерфейсу
+            cat > "/etc/systemd/network/10-${TUN_NAME}.network" <<EOF
+[Match]
+Name=${TUN_NAME}
+
+[Network]
+; Туннельный адрес: ${TUN_LOCAL_IP}/30
+Address=${TUN_LOCAL_IP}/30
+EOF
+            systemctl restart systemd-networkd
+            sleep 1
+            ok "Туннель $TUN_NAME настроен через systemd-networkd (переживёт перезагрузку)"
         else
             # Создаём через ip команды (временный до перезагрузки)
             ip tunnel add "$TUN_NAME" mode "$TUN_TYPE" \
@@ -155,13 +182,19 @@ EOF
         STATUS["tunnel"]="OK"
 
         # IP forwarding
+        # ─── Включение IP forwarding (надёжный способ для Альт Линукс) ───────
+        info "Включение IP forwarding..."
+        # Записываем в sysctl.d — применяется при загрузке (надёжнее на Альт)
+        echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-ipforward.conf
+        # Применяем немедленно
+        sysctl -w net.ipv4.ip_forward=1 >/dev/null
+        # Также обновляем sysctl.conf для совместимости
         if grep -q '^net.ipv4.ip_forward' /etc/sysctl.conf 2>/dev/null; then
             sed -i 's/^#*\s*net\.ipv4\.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
         else
             echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
         fi
-        sysctl -w net.ipv4.ip_forward=1 >/dev/null
-        ok "IP forwarding включён"
+        ok "IP forwarding включён (/etc/sysctl.d/99-ipforward.conf)"
         STATUS["ip_forward"]="OK"
 
         # Проверка: ping до удалённого конца туннеля
@@ -447,3 +480,19 @@ if [[ "$MODE_CHOICE" == "2" || "$MODE_CHOICE" == "3" ]]; then
     echo "  5. Проверьте обратный DNS: nslookup 172.16.0.1 <IP_HQ_SRV>"
     echo "  6. На клиентах укажите DNS-сервер: $SRV_IP"
 fi
+echo
+echo "------------------------------------------------------------"
+echo "  ПРОВЕРКА ПОСЛЕ ПЕРЕЗАГРУЗКИ:"
+echo "------------------------------------------------------------"
+if [[ "$MODE_CHOICE" == "1" || "$MODE_CHOICE" == "3" ]]; then
+    echo "  1. ip link show $TUN_NAME — туннель должен быть UP"
+    echo "  2. ip addr show $TUN_NAME — IP ${TUN_LOCAL_IP}/30 должен присутствовать"
+    echo "  3. ping $TUN_REMOTE_IP — туннель до удалённого конца работает"
+    echo "  4. cat /proc/sys/net/ipv4/ip_forward — должно быть 1"
+fi
+if [[ "$MODE_CHOICE" == "2" || "$MODE_CHOICE" == "3" ]]; then
+    echo "  5. systemctl status named (или bind9) — DNS должен быть active"
+    echo "  6. nslookup hq-rtr.lab.local 127.0.0.1 — DNS должен отвечать"
+    echo "  7. nslookup 172.16.0.1 127.0.0.1 — обратный DNS должен работать"
+fi
+echo "------------------------------------------------------------"

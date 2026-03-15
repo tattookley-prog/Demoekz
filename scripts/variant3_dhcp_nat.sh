@@ -110,7 +110,19 @@ if command -v nmcli &>/dev/null; then
         ipv4.addresses "${LAN_IP}/${LAN_PREFIX}" \
         connection.autoconnect yes
     nmcli con up "lan-${LAN_IFACE}"
+elif systemctl is-active systemd-networkd &>/dev/null; then
+    cat > "/etc/systemd/network/10-${LAN_IFACE}.network" <<EOF
+[Match]
+Name=${LAN_IFACE}
+
+[Network]
+Address=${LAN_IP}/${LAN_PREFIX}
+EOF
+    systemctl restart systemd-networkd
+    sleep 1
+    ok "Интерфейс $LAN_IFACE настроен через systemd-networkd"
 else
+    warn "Ни nmcli, ни systemd-networkd — настройка временная"
     ip addr flush dev "$LAN_IFACE" 2>/dev/null || true
     ip addr add "${LAN_IP}/${LAN_PREFIX}" dev "$LAN_IFACE"
     ip link set "$LAN_IFACE" up
@@ -125,6 +137,17 @@ if command -v nmcli &>/dev/null; then
         ipv4.method auto \
         connection.autoconnect yes
     nmcli con up "wan-${WAN_IFACE}"
+elif systemctl is-active systemd-networkd &>/dev/null; then
+    cat > "/etc/systemd/network/10-${WAN_IFACE}.network" <<EOF
+[Match]
+Name=${WAN_IFACE}
+
+[Network]
+DHCP=ipv4
+EOF
+    systemctl restart systemd-networkd
+    sleep 1
+    ok "Интерфейс $WAN_IFACE (DHCP) настроен через systemd-networkd"
 else
     ip link set "$WAN_IFACE" up
 fi
@@ -132,14 +155,19 @@ ok "WAN ($WAN_IFACE): DHCP (получает IP от vmbr0)"
 STATUS["ip_wan"]="OK"
 
 # ─── 2. IP forwarding ─────────────────────────────────────────────────────────
+# ─── Включение IP forwarding (надёжный способ для Альт Линукс) ───────────────
 info "Включение IP forwarding..."
+# Записываем в sysctl.d — применяется при загрузке (надёжнее на Альт)
+echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-ipforward.conf
+# Применяем немедленно
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+# Также обновляем sysctl.conf для совместимости
 if grep -q '^net.ipv4.ip_forward' /etc/sysctl.conf 2>/dev/null; then
     sed -i 's/^#*\s*net\.ipv4\.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
 else
     echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
 fi
-sysctl -w net.ipv4.ip_forward=1 >/dev/null
-ok "IP forwarding включён"
+ok "IP forwarding включён (/etc/sysctl.d/99-ipforward.conf)"
 STATUS["ip_forward"]="OK"
 
 # ─── Задание 1: DHCP-сервер ───────────────────────────────────────────────────
@@ -308,3 +336,14 @@ echo "  2. Проверьте получение DHCP-адреса: dhclient eth
 echo "  3. Ожидаемый адрес клиента: ${DHCP_START} – ${DHCP_END}"
 echo "  4. Проверьте выход в интернет с клиента: ping 8.8.8.8"
 echo "  5. Проверьте NAT: tcpdump -i ${WAN_IFACE} icmp"
+echo
+echo "------------------------------------------------------------"
+echo "  ПРОВЕРКА ПОСЛЕ ПЕРЕЗАГРУЗКИ:"
+echo "------------------------------------------------------------"
+echo "  1. ip addr show $LAN_IFACE — IP ${LAN_IP}/${LAN_PREFIX} должен присутствовать"
+echo "  2. systemctl status dhcpd (или dhcp-server) — DHCP должен быть active"
+echo "  3. cat /proc/sys/net/ipv4/ip_forward — должно быть 1"
+echo "  4. nft list ruleset — правила NAT должны присутствовать"
+echo "     (или: iptables -t nat -L -n — если использовался iptables)"
+echo "  5. ping -I $WAN_IFACE 8.8.8.8 — интернет через WAN должен работать"
+echo "------------------------------------------------------------"

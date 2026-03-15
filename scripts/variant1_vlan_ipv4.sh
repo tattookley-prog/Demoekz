@@ -72,6 +72,17 @@ declare -A STATUS
 
 info "[Задание 1] Создание VLAN sub-интерфейсов на $TRUNK_IFACE..."
 
+# ─── Загрузка модуля 8021q (необходим для VLAN sub-интерфейсов) ──────────────
+info "Загрузка модуля 8021q..."
+if ! lsmod | grep -q 8021q; then
+    modprobe 8021q 2>/dev/null && ok "Модуль 8021q загружен" \
+        || warn "Не удалось загрузить 8021q (возможно уже встроен в ядро)"
+else
+    ok "Модуль 8021q уже загружен"
+fi
+# Чтобы модуль загружался автоматически при перезагрузке
+echo '8021q' > /etc/modules-load.d/8021q.conf 2>/dev/null || true
+
 # Включаем родительский интерфейс
 ip link set "$TRUNK_IFACE" up 2>/dev/null || true
 
@@ -89,8 +100,39 @@ create_vlan_subif() {
             ipv4.method manual ipv4.addresses "${gw_ip}/${prefix}" \
             connection.autoconnect yes
         nmcli con up "vlan${vlan_id}"
+    elif systemctl is-active systemd-networkd &>/dev/null; then
+        # Резервный вариант через systemd-networkd (переживает перезагрузку)
+        # .netdev — создаёт VLAN-устройство, связанное с родительским интерфейсом
+        cat > "/etc/systemd/network/10-vlan${vlan_id}.netdev" <<EOF
+[NetDev]
+Name=${subif}
+Kind=vlan
+
+[VLAN]
+Id=${vlan_id}
+EOF
+        # .network — назначает адрес VLAN sub-интерфейсу
+        cat > "/etc/systemd/network/10-vlan${vlan_id}.network" <<EOF
+[Match]
+Name=${subif}
+
+[Network]
+Address=${gw_ip}/${prefix}
+EOF
+        # .network для родительского интерфейса — привязывает VLAN к физическому порту
+        cat > "/etc/systemd/network/05-${TRUNK_IFACE}.network" <<EOF
+[Match]
+Name=${TRUNK_IFACE}
+
+[Network]
+VLAN=${subif}
+EOF
+        systemctl restart systemd-networkd
+        sleep 1
+        ok "VLAN $vlan_id настроен через systemd-networkd (переживёт перезагрузку)"
     else
-        # Fallback: ip-команды (без NetworkManager)
+        # Временный fallback через ip-команды
+        warn "Ни nmcli, ни systemd-networkd недоступны — настройка временная (до перезагрузки)"
         ip link delete "$subif" 2>/dev/null || true
         ip link add link "$TRUNK_IFACE" name "$subif" type vlan id "$vlan_id"
         ip link set "$subif" up
@@ -105,15 +147,19 @@ create_vlan_subif 10 "192.168.10.1" "24" "Management" \
 create_vlan_subif 20 "192.168.20.1" "24" "Users" \
     && STATUS["vlan20"]="OK" || STATUS["vlan20"]="ERROR"
 
-# ─── Включение IP forwarding ──────────────────────────────────────────────────
+# ─── Включение IP forwarding (надёжный способ для Альт Линукс) ───────────────
 info "Включение IP forwarding..."
+# Записываем в sysctl.d — применяется при загрузке (надёжнее на Альт)
+echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-ipforward.conf
+# Применяем немедленно
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+# Также обновляем sysctl.conf для совместимости
 if grep -q '^net.ipv4.ip_forward' /etc/sysctl.conf 2>/dev/null; then
     sed -i 's/^#*\s*net\.ipv4\.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
 else
     echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
 fi
-sysctl -w net.ipv4.ip_forward=1 >/dev/null
-ok "IP forwarding включён"
+ok "IP forwarding включён (/etc/sysctl.d/99-ipforward.conf)"
 STATUS["ip_forward"]="OK"
 
 # ─── Задание 2: Статический IP для HQ-SRV ────────────────────────────────────
@@ -263,3 +309,14 @@ echo "     (инструкции выведены выше)"
 echo "  2. На HQ-CLI (Proxmox: VLAN Tag = 20) проверьте получение DHCP-адреса"
 echo "  3. Убедитесь, что сетевая карта ВМ подключена к vmbr1 с нужным VLAN Tag"
 echo "  4. Проверьте ping между HQ-SRV (192.168.10.10) и HQ-CLI (192.168.20.x)"
+echo
+echo "------------------------------------------------------------"
+echo "  ПРОВЕРКА ПОСЛЕ ПЕРЕЗАГРУЗКИ:"
+echo "------------------------------------------------------------"
+echo "  1. ip link show — убедитесь, что ${TRUNK_IFACE}.10 и ${TRUNK_IFACE}.20 появились"
+echo "  2. ip addr show ${TRUNK_IFACE}.10 — должен быть IP 192.168.10.1/24"
+echo "  3. ip addr show ${TRUNK_IFACE}.20 — должен быть IP 192.168.20.1/24"
+echo "  4. systemctl status dhcpd (или dhcp-server) — DHCP должен быть active"
+echo "  5. cat /proc/sys/net/ipv4/ip_forward — должно быть 1"
+echo "  6. lsmod | grep 8021q — модуль должен быть загружен"
+echo "------------------------------------------------------------"
