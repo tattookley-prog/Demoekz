@@ -3,6 +3,19 @@
 # Темы: Статическая маршрутизация и SSH
 # Запускается поочерёдно на HQ-RTR и BR-RTR
 # Демоэкзамен 09.02.06 Сетевое и системное администрирование, 2026
+#
+# ─── Совместимость с операционными системами ──────────────────────────────────
+# ✔ Альт Линукс JeOS / Альт сервер    — основная целевая ОС (apt-get, nmcli)
+# ✔ Debian 11/12 (Bullseye/Bookworm)  — полная поддержка (nmcli, openssh-server)
+# ✔ Ubuntu 20.04/22.04/24.04 LTS      — полная поддержка (nmcli, openssh-server)
+# ✔ Любой Linux с iproute2 + sshd     — ip-команды + sshd_config
+# △ Linux без NetworkManager          — маршруты через ip route + rc.local (временные
+#                                        до перезагрузки, постоянство через rc.local)
+# ✘ EcoRouter                         — только CLI EcoRouter, этот скрипт неприменим
+# ✘ Windows / macOS                   — bash-скрипт, не поддерживается
+#
+# Требуемые пакеты:
+#   iproute2 (ip), nmcli (NetworkManager), openssh-server (sshd)
 
 set -euo pipefail
 

@@ -3,6 +3,19 @@
 # Темы: DHCP и NAT (PAT/Masquerade)
 # Запускается на HQ-RTR (пограничный маршрутизатор)
 # Демоэкзамен 09.02.06 Сетевое и системное администрирование, 2026
+#
+# ─── Совместимость с операционными системами ──────────────────────────────────
+# ✔ Альт Линукс JeOS / Альт сервер    — основная целевая ОС (apt-get, nmcli, nftables)
+# ✔ Debian 11/12 (Bullseye/Bookworm)  — полная поддержка (nmcli, isc-dhcp-server, nftables)
+# ✔ Ubuntu 20.04/22.04/24.04 LTS      — полная поддержка (nmcli, isc-dhcp-server, nftables)
+# ✔ Любой Linux с iproute2 + iptables — используется fallback на iptables при отсутствии nftables
+# △ Linux без NetworkManager          — ip-команды (состояние временное до перезагрузки)
+# ✘ EcoRouter                         — только CLI EcoRouter, этот скрипт неприменим
+# ✘ Windows / macOS                   — bash-скрипт, не поддерживается
+#
+# Требуемые пакеты:
+#   iproute2 (ip), nmcli (NetworkManager), dhcpd или isc-dhcp-server,
+#   nftables (предпочтительно) или iptables (fallback)
 
 set -euo pipefail
 

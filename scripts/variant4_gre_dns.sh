@@ -3,6 +3,20 @@
 # Темы: GRE/IPIP туннели и DNS
 # Запускается поочерёдно на HQ-RTR/BR-RTR и HQ-SRV
 # Демоэкзамен 09.02.06 Сетевое и системное администрирование, 2026
+#
+# ─── Совместимость с операционными системами ──────────────────────────────────
+# ✔ Альт Линукс JeOS / Альт сервер    — основная целевая ОС (apt-get, nmcli, bind/named)
+# ✔ Debian 11/12 (Bullseye/Bookworm)  — полная поддержка (nmcli, bind9)
+# ✔ Ubuntu 20.04/22.04/24.04 LTS      — полная поддержка (nmcli, bind9)
+# ✔ Любой Linux с iproute2            — туннель через ip tunnel (без nmcli, временный)
+# △ Linux без NetworkManager          — туннель через ip tunnel + rc.local (постоянство
+#                                        после перезагрузки требует ручной проверки)
+# ✘ EcoRouter                         — только CLI EcoRouter, этот скрипт неприменим
+# ✘ Windows / macOS                   — bash-скрипт, не поддерживается
+#
+# Требуемые пакеты:
+#   iproute2 (ip tunnel), nmcli (NetworkManager) — для туннеля
+#   bind или bind9 (named) — для DNS-сервера
 
 set -euo pipefail
 
