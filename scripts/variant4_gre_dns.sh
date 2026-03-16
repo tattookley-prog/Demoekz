@@ -3,6 +3,7 @@
 # Темы: GRE/IPIP туннели и DNS
 # Запускается поочерёдно на HQ-RTR/BR-RTR и HQ-SRV
 # Демоэкзамен 09.02.06 Сетевое и системное администрирование, 2026
+# Покрывает: GRE/IPIP туннели, DNS (bind/named), etcnet-автосохранение IP
 
 set -euo pipefail
 
@@ -14,6 +15,36 @@ info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+# ─── Автосохранение статического IP (etcnet, /etc/net/ifaces/) ───────────────
+# Альт Сервер использует etcnet как штатный механизм управления сетью.
+# Функция записывает конфиг интерфейса в /etc/net/ifaces/<iface>/ для того,
+# чтобы статический адрес переживал перезагрузку без nmcli/systemd-networkd.
+save_static_ip_etcnet() {
+    local iface="$1"
+    local cidr="$2"          # формат: A.B.C.D/PREFIX
+    local gateway="${3:-}"   # необязательный шлюз
+
+    local iface_dir="/etc/net/ifaces/${iface}"
+    mkdir -p "$iface_dir"
+
+    # options — тип настройки и автозапуск
+    cat > "${iface_dir}/options" <<EOF
+BOOTPROTO=static
+ONBOOT=yes
+TYPE=eth
+EOF
+
+    # ipv4address — статический адрес с маской
+    echo "${cidr}" > "${iface_dir}/ipv4address"
+
+    # ipv4route — маршрут по умолчанию (если шлюз задан)
+    if [[ -n "$gateway" ]]; then
+        echo "default via ${gateway}" > "${iface_dir}/ipv4route"
+    fi
+
+    ok "etcnet: IP ${cidr} сохранён в ${iface_dir}/ (переживёт перезагрузку)"
+}
 
 # ─── Проверка root ────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
@@ -83,6 +114,13 @@ if [[ "$MODE_CHOICE" == "1" || "$MODE_CHOICE" == "3" ]]; then
 
     read -rp "Внешний IP этого маршрутизатора на $WAN_IFACE [${WAN_IP_AUTO:-10.10.10.1}]: " WAN_LOCAL
     WAN_LOCAL="${WAN_LOCAL:-${WAN_IP_AUTO:-10.10.10.1}}"
+
+    read -rp "Маска WAN-интерфейса $WAN_IFACE (префикс) [28]: " WAN_PREFIX
+    WAN_PREFIX="${WAN_PREFIX:-28}"
+    if ! [[ "$WAN_PREFIX" =~ ^([0-9]|[12][0-9]|3[012])$ ]]; then
+        warn "Некорректный префикс '$WAN_PREFIX', используется 28"
+        WAN_PREFIX="28"
+    fi
 
     read -rp "Внешний IP удалённого маршрутизатора [10.10.10.2]: " WAN_REMOTE
     WAN_REMOTE="${WAN_REMOTE:-10.10.10.2}"
@@ -180,6 +218,8 @@ EOF
 
         ok "Туннель $TUN_NAME: ${TUN_LOCAL_IP}/30 ↔ $TUN_REMOTE_IP"
         STATUS["tunnel"]="OK"
+        save_static_ip_etcnet "$WAN_IFACE" "${WAN_LOCAL}/${WAN_PREFIX}"
+        save_static_ip_etcnet "$TUN_NAME" "${TUN_LOCAL_IP}/30"
 
         # IP forwarding
         # ─── Включение IP forwarding (надёжный способ для Альт Линукс) ───────
@@ -489,6 +529,7 @@ if [[ "$MODE_CHOICE" == "1" || "$MODE_CHOICE" == "3" ]]; then
     echo "  2. ip addr show $TUN_NAME — IP ${TUN_LOCAL_IP}/30 должен присутствовать"
     echo "  3. ping $TUN_REMOTE_IP — туннель до удалённого конца работает"
     echo "  4. cat /proc/sys/net/ipv4/ip_forward — должно быть 1"
+    echo "  5. ls /etc/net/ifaces/ — конфиги интерфейсов (etcnet) должны существовать"
 fi
 if [[ "$MODE_CHOICE" == "2" || "$MODE_CHOICE" == "3" ]]; then
     echo "  5. systemctl status named (или bind9) — DNS должен быть active"

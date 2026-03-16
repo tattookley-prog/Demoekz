@@ -3,6 +3,7 @@
 # Темы: VLAN и Статическая адресация
 # Запускается на HQ-RTR (шлюз для VLAN 10 и VLAN 20)
 # Демоэкзамен 09.02.06 Сетевое и системное администрирование, 2026
+# Покрывает: VLAN sub-интерфейсы, статическая адресация, DHCP, etcnet-автосохранение IP
 
 set -euo pipefail
 
@@ -14,6 +15,36 @@ info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+# ─── Автосохранение статического IP (etcnet, /etc/net/ifaces/) ───────────────
+# Альт Сервер использует etcnet как штатный механизм управления сетью.
+# Функция записывает конфиг интерфейса в /etc/net/ifaces/<iface>/ для того,
+# чтобы статический адрес переживал перезагрузку без nmcli/systemd-networkd.
+save_static_ip_etcnet() {
+    local iface="$1"
+    local cidr="$2"          # формат: A.B.C.D/PREFIX
+    local gateway="${3:-}"   # необязательный шлюз
+
+    local iface_dir="/etc/net/ifaces/${iface}"
+    mkdir -p "$iface_dir"
+
+    # options — тип настройки и автозапуск
+    cat > "${iface_dir}/options" <<EOF
+BOOTPROTO=static
+ONBOOT=yes
+TYPE=eth
+EOF
+
+    # ipv4address — статический адрес с маской
+    echo "${cidr}" > "${iface_dir}/ipv4address"
+
+    # ipv4route — маршрут по умолчанию (если шлюз задан)
+    if [[ -n "$gateway" ]]; then
+        echo "default via ${gateway}" > "${iface_dir}/ipv4route"
+    fi
+
+    ok "etcnet: IP ${cidr} сохранён в ${iface_dir}/ (переживёт перезагрузку)"
+}
 
 # ─── Проверка root ────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
@@ -143,9 +174,11 @@ EOF
 
 create_vlan_subif 10 "192.168.10.1" "24" "Management" \
     && STATUS["vlan10"]="OK" || STATUS["vlan10"]="ERROR"
+save_static_ip_etcnet "${TRUNK_IFACE}.10" "192.168.10.1/24"
 
 create_vlan_subif 20 "192.168.20.1" "24" "Users" \
     && STATUS["vlan20"]="OK" || STATUS["vlan20"]="ERROR"
+save_static_ip_etcnet "${TRUNK_IFACE}.20" "192.168.20.1/24"
 
 # ─── Включение IP forwarding (надёжный способ для Альт Линукс) ───────────────
 info "Включение IP forwarding..."
@@ -201,6 +234,7 @@ if [[ "$(hostname)" == *"hq-srv"* ]]; then
         ok "HQ-SRV IP настроен: ${HQ_SRV_IP}/24"
         STATUS["hq_srv_ip"]="OK"
     fi
+    save_static_ip_etcnet "eth0" "${HQ_SRV_IP}/24" "192.168.10.1"
 else
     info "Скрипт запущен не на HQ-SRV — инструкции выведены выше."
     STATUS["hq_srv_ip"]="SKIP"
@@ -319,4 +353,5 @@ echo "  3. ip addr show ${TRUNK_IFACE}.20 — должен быть IP 192.168.2
 echo "  4. systemctl status dhcpd (или dhcp-server) — DHCP должен быть active"
 echo "  5. cat /proc/sys/net/ipv4/ip_forward — должно быть 1"
 echo "  6. lsmod | grep 8021q — модуль должен быть загружен"
+echo "  7. ls /etc/net/ifaces/ — директории для VLAN-интерфейсов должны существовать"
 echo "------------------------------------------------------------"
