@@ -115,6 +115,7 @@ if [[ ! "${CONFIRM,,}" =~ ^y ]]; then
 fi
 
 declare -A STATUS
+ETCNET_FALLBACK=false
 
 # ─── Задание 1: Создание VLAN 10 и VLAN 20 на HQ-RTR ─────────────────────────
 # В Proxmox роль коммутатора выполняет мост vmbr1 (VLAN Aware).
@@ -183,6 +184,21 @@ EOF
     else
         # Временный fallback через ip-команды
         warn "Ни nmcli, ни systemd-networkd недоступны — настройка временная (до перезагрузки)"
+        ETCNET_FALLBACK=true
+        # Создаём конфиг родительского интерфейса в etcnet (если ещё нет)
+        PARENT_DIR="/etc/net/ifaces/${TRUNK_IFACE}"
+        if [[ ! -f "${PARENT_DIR}/options" ]]; then
+            mkdir -p "$PARENT_DIR"
+            cat > "${PARENT_DIR}/options" <<EOF
+BOOTPROTO=static
+ONBOOT=yes
+TYPE=eth
+DISABLED=no
+NM_CONTROLLED=no
+CONFIG_IPV4=no
+EOF
+            ok "etcnet: создан конфиг родительского интерфейса ${TRUNK_IFACE}"
+        fi
         ip link delete "$subif" 2>/dev/null || true
         ip link add link "$TRUNK_IFACE" name "$subif" type vlan id "$vlan_id"
         ip link set "$subif" up
@@ -203,6 +219,16 @@ if create_vlan_subif 20 "192.168.20.1" "24" "Users"; then
     STATUS["vlan20"]="OK"
 else
     STATUS["vlan20"]="ERROR"
+fi
+
+# Перезапуск сети через etcnet (только если использовался fallback)
+if [[ "$ETCNET_FALLBACK" == true ]]; then
+    info "Применяю сетевые настройки etcnet (systemctl restart network)..."
+    if systemctl restart network 2>/dev/null; then
+        ok "Сеть перезапущена, настройки etcnet применены"
+    else
+        warn "Не удалось перезапустить network через systemctl, попробуйте вручную: service network restart"
+    fi
 fi
 
 # ─── Включение IP forwarding (надёжный способ для Альт Линукс) ───────────────
