@@ -3,6 +3,7 @@
 # Темы: Статическая маршрутизация и SSH
 # Запускается поочерёдно на HQ-RTR и BR-RTR
 # Демоэкзамен 09.02.06 Сетевое и системное администрирование, 2026
+# Покрывает: статическая маршрутизация, SSH, etcnet-автосохранение IP
 
 set -euo pipefail
 
@@ -14,6 +15,36 @@ info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+# ─── Автосохранение статического IP (etcnet, /etc/net/ifaces/) ───────────────
+# Альт Сервер использует etcnet как штатный механизм управления сетью.
+# Функция записывает конфиг интерфейса в /etc/net/ifaces/<iface>/ для того,
+# чтобы статический адрес переживал перезагрузку без nmcli/systemd-networkd.
+save_static_ip_etcnet() {
+    local iface="$1"
+    local cidr="$2"          # формат: A.B.C.D/PREFIX
+    local gateway="${3:-}"   # необязательный шлюз
+
+    local iface_dir="/etc/net/ifaces/${iface}"
+    mkdir -p "$iface_dir"
+
+    # options — тип настройки и автозапуск
+    cat > "${iface_dir}/options" <<EOF
+BOOTPROTO=static
+ONBOOT=yes
+TYPE=eth
+EOF
+
+    # ipv4address — статический адрес с маской
+    echo "${cidr}" > "${iface_dir}/ipv4address"
+
+    # ipv4route — маршрут по умолчанию (если шлюз задан)
+    if [[ -n "$gateway" ]]; then
+        echo "default via ${gateway}" > "${iface_dir}/ipv4route"
+    fi
+
+    ok "etcnet: IP ${cidr} сохранён в ${iface_dir}/ (переживёт перезагрузку)"
+}
 
 # ─── Проверка root ────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
@@ -144,6 +175,7 @@ else
 fi
 ok "WAN ($WAN_IFACE): ${ISP_LOCAL}/30"
 STATUS["ip_wan"]="OK"
+save_static_ip_etcnet "$WAN_IFACE" "${ISP_LOCAL}/30"
 
 # LAN (локальная сеть)
 if command -v nmcli &>/dev/null; then
@@ -172,6 +204,7 @@ else
 fi
 ok "LAN ($LAN_IFACE): ${LAN_GW}/24"
 STATUS["ip_lan"]="OK"
+save_static_ip_etcnet "$LAN_IFACE" "${LAN_GW}/24"
 
 # ─── IP forwarding ────────────────────────────────────────────────────────────
 # ─── Включение IP forwarding (надёжный способ для Альт Линукс) ───────────────
@@ -320,4 +353,5 @@ echo "  3. ip route show — маршрут $REMOTE_LAN via $NEXT_HOP долже
 echo "  4. cat /proc/sys/net/ipv4/ip_forward — должно быть 1"
 echo "  5. ssh ${SSH_USER}@${LAN_GW} — должно работать, root — запрещён"
 echo "  6. ping $ISP_REMOTE — стык с провайдером работает"
+echo "  7. ls /etc/net/ifaces/ — конфиги интерфейсов (etcnet) должны существовать"
 echo "------------------------------------------------------------"

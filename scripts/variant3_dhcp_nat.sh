@@ -3,6 +3,7 @@
 # Темы: DHCP и NAT (PAT/Masquerade)
 # Запускается на HQ-RTR (пограничный маршрутизатор)
 # Демоэкзамен 09.02.06 Сетевое и системное администрирование, 2026
+# Покрывает: DHCP, NAT/Masquerade, etcnet-автосохранение IP
 
 set -euo pipefail
 
@@ -14,6 +15,36 @@ info()  { echo -e "${CYAN}[INFO]${NC}  $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+# ─── Автосохранение статического IP (etcnet, /etc/net/ifaces/) ───────────────
+# Альт Сервер использует etcnet как штатный механизм управления сетью.
+# Функция записывает конфиг интерфейса в /etc/net/ifaces/<iface>/ для того,
+# чтобы статический адрес переживал перезагрузку без nmcli/systemd-networkd.
+save_static_ip_etcnet() {
+    local iface="$1"
+    local cidr="$2"          # формат: A.B.C.D/PREFIX
+    local gateway="${3:-}"   # необязательный шлюз
+
+    local iface_dir="/etc/net/ifaces/${iface}"
+    mkdir -p "$iface_dir"
+
+    # options — тип настройки и автозапуск
+    cat > "${iface_dir}/options" <<EOF
+BOOTPROTO=static
+ONBOOT=yes
+TYPE=eth
+EOF
+
+    # ipv4address — статический адрес с маской
+    echo "${cidr}" > "${iface_dir}/ipv4address"
+
+    # ipv4route — маршрут по умолчанию (если шлюз задан)
+    if [[ -n "$gateway" ]]; then
+        echo "default via ${gateway}" > "${iface_dir}/ipv4route"
+    fi
+
+    ok "etcnet: IP ${cidr} сохранён в ${iface_dir}/ (переживёт перезагрузку)"
+}
 
 # ─── Проверка root ────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
@@ -129,6 +160,7 @@ else
 fi
 ok "LAN ($LAN_IFACE): ${LAN_IP}/${LAN_PREFIX}"
 STATUS["ip_lan"]="OK"
+save_static_ip_etcnet "$LAN_IFACE" "${LAN_IP}/${LAN_PREFIX}"
 
 # WAN-интерфейс обычно получает адрес через DHCP от Proxmox/vmbr0
 if command -v nmcli &>/dev/null; then
@@ -153,6 +185,11 @@ else
 fi
 ok "WAN ($WAN_IFACE): DHCP (получает IP от vmbr0)"
 STATUS["ip_wan"]="OK"
+
+# WAN — DHCP, сохраняем тип в etcnet
+mkdir -p "/etc/net/ifaces/${WAN_IFACE}"
+printf 'BOOTPROTO=dhcp\nONBOOT=yes\nTYPE=eth\n' > "/etc/net/ifaces/${WAN_IFACE}/options"
+ok "etcnet: WAN ${WAN_IFACE} — DHCP, конфиг сохранён"
 
 # ─── 2. IP forwarding ─────────────────────────────────────────────────────────
 # ─── Включение IP forwarding (надёжный способ для Альт Линукс) ───────────────
@@ -346,4 +383,5 @@ echo "  3. cat /proc/sys/net/ipv4/ip_forward — должно быть 1"
 echo "  4. nft list ruleset — правила NAT должны присутствовать"
 echo "     (или: iptables -t nat -L -n — если использовался iptables)"
 echo "  5. ping -I $WAN_IFACE 8.8.8.8 — интернет через WAN должен работать"
+echo "  6. ls /etc/net/ifaces/ — конфиги интерфейсов (etcnet) должны существовать"
 echo "------------------------------------------------------------"
