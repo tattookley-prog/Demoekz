@@ -54,15 +54,50 @@ CONFIG_IPV4=yes
 EOF
     fi
 
-    # ipv4address — статический адрес с маской
-    echo "${cidr}" > "${iface_dir}/ipv4address"
+    # ipv4address — статический адрес с маской (только если CIDR задан)
+    if [[ -n "$cidr" ]]; then
+        echo "${cidr}" > "${iface_dir}/ipv4address"
+    fi
 
-    # ipv4route — маршрут по умолчанию (если шлюз задан)
+    # ipv4route — маршрут по умолчанию (если шлюз задан) или connected-маршрут к подсети
     if [[ -n "$gateway" ]]; then
         echo "default via ${gateway}" > "${iface_dir}/ipv4route"
+    elif [[ -n "$cidr" ]]; then
+        # Вычисляем connected-маршрут к подсети, чтобы etcnet корректно поднимал маршрутизацию
+        local network
+        network=$(python3 -c "import ipaddress; print(ipaddress.ip_interface('${cidr}').network)" 2>/dev/null) \
+            || network=$(ipcalc -n "${cidr}" 2>/dev/null | awk '/^Network:/{print $2}') \
+            || true
+        if [[ -n "$network" ]]; then
+            echo "${network} dev ${iface}" > "${iface_dir}/ipv4route"
+        else
+            warn "etcnet: не удалось вычислить сеть из ${cidr} — ipv4route не создан (проверьте наличие python3 или ipcalc)"
+        fi
     fi
 
     ok "etcnet: IP ${cidr} сохранён в ${iface_dir}/ (переживёт перезагрузку)"
+}
+
+# ─── Сохранение trunk-интерфейса в etcnet (без IP-адреса) ────────────────────
+# Trunk-интерфейс должен подниматься при загрузке, чтобы VLAN sub-интерфейсы
+# могли быть созданы поверх него. IP-адрес на trunk не нужен.
+save_trunk_iface_etcnet() {
+    local iface="$1"
+    local iface_dir="/etc/net/ifaces/${iface}"
+    if [[ -f "${iface_dir}/options" ]]; then
+        info "etcnet: конфиг trunk-интерфейса ${iface} уже существует — используется без изменений"
+        return 0
+    fi
+    mkdir -p "$iface_dir"
+    cat > "${iface_dir}/options" <<EOF
+BOOTPROTO=static
+ONBOOT=yes
+TYPE=eth
+DISABLED=no
+NM_CONTROLLED=no
+CONFIG_IPV4=no
+EOF
+    ok "etcnet: создан конфиг trunk-интерфейса ${iface} (без IP, переживёт перезагрузку)"
 }
 
 # ─── Проверка root ────────────────────────────────────────────────────────────
@@ -144,6 +179,9 @@ create_vlan_subif() {
     local desc="$4"
     local subif="${TRUNK_IFACE}.${vlan_id}"
 
+    # Сохраняем trunk-интерфейс в etcnet перед созданием VLAN sub-интерфейса
+    save_trunk_iface_etcnet "$TRUNK_IFACE"
+
     if command -v nmcli &>/dev/null; then
         nmcli con delete "vlan${vlan_id}" &>/dev/null || true
         nmcli con add type vlan ifname "$subif" con-name "vlan${vlan_id}" \
@@ -185,20 +223,6 @@ EOF
         # Временный fallback через ip-команды
         warn "Ни nmcli, ни systemd-networkd недоступны — настройка временная (до перезагрузки)"
         ETCNET_FALLBACK=true
-        # Создаём конфиг родительского интерфейса в etcnet (если ещё нет)
-        PARENT_DIR="/etc/net/ifaces/${TRUNK_IFACE}"
-        if [[ ! -f "${PARENT_DIR}/options" ]]; then
-            mkdir -p "$PARENT_DIR"
-            cat > "${PARENT_DIR}/options" <<EOF
-BOOTPROTO=static
-ONBOOT=yes
-TYPE=eth
-DISABLED=no
-NM_CONTROLLED=no
-CONFIG_IPV4=no
-EOF
-            ok "etcnet: создан конфиг родительского интерфейса ${TRUNK_IFACE}"
-        fi
         ip link delete "$subif" 2>/dev/null || true
         ip link add link "$TRUNK_IFACE" name "$subif" type vlan id "$vlan_id"
         ip link set "$subif" up
@@ -405,4 +429,9 @@ echo "  4. systemctl status dhcpd (или dhcp-server) — DHCP должен б�
 echo "  5. cat /proc/sys/net/ipv4/ip_forward — должно быть 1"
 echo "  6. lsmod | grep 8021q — модуль должен быть загружен"
 echo "  7. ls /etc/net/ifaces/ — директории для VLAN-интерфейсов должны существовать"
+echo "  8. Проверка etcnet-конфигов (адреса и маршруты):"
+echo "     cat /etc/net/ifaces/${TRUNK_IFACE}.10/ipv4address"
+echo "     cat /etc/net/ifaces/${TRUNK_IFACE}.20/ipv4address"
+echo "     cat /etc/net/ifaces/${TRUNK_IFACE}.10/ipv4route"
+echo "     cat /etc/net/ifaces/${TRUNK_IFACE}.20/ipv4route"
 echo "------------------------------------------------------------"
