@@ -22,18 +22,37 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 # чтобы статический адрес переживал перезагрузку без nmcli/systemd-networkd.
 save_static_ip_etcnet() {
     local iface="$1"
-    local cidr="$2"          # формат: A.B.C.D/PREFIX
-    local gateway="${3:-}"   # необязательный шлюз
+    local cidr="$2"              # формат: A.B.C.D/PREFIX
+    local gateway="${3:-}"       # необязательный шлюз
+    local vlan_id="${4:-}"       # необязательный: ID VLAN (для VLAN sub-интерфейсов)
+    local parent_iface="${5:-}"  # необязательный: родительский интерфейс (для VLAN)
 
     local iface_dir="/etc/net/ifaces/${iface}"
     mkdir -p "$iface_dir"
 
     # options — тип настройки и автозапуск
-    cat > "${iface_dir}/options" <<EOF
+    if [[ -n "$vlan_id" && -n "$parent_iface" ]]; then
+        # VLAN sub-интерфейс — etcnet требует TYPE=vlan + HOST + VLAN_ID
+        cat > "${iface_dir}/options" <<EOF
+BOOTPROTO=static
+ONBOOT=yes
+TYPE=vlan
+HOST=${parent_iface}
+VLAN_ID=${vlan_id}
+DISABLED=no
+NM_CONTROLLED=no
+CONFIG_IPV4=yes
+EOF
+    else
+        cat > "${iface_dir}/options" <<EOF
 BOOTPROTO=static
 ONBOOT=yes
 TYPE=eth
+DISABLED=no
+NM_CONTROLLED=no
+CONFIG_IPV4=yes
 EOF
+    fi
 
     # ipv4address — статический адрес с маской
     echo "${cidr}" > "${iface_dir}/ipv4address"
@@ -170,15 +189,21 @@ EOF
         ip addr add "${gw_ip}/${prefix}" dev "$subif"
     fi
     ok "VLAN $vlan_id ($desc): $subif = ${gw_ip}/${prefix}"
+    # Сохраняем в etcnet ПОСЛЕ любого метода настройки (TYPE=vlan для sub-интерфейсов)
+    save_static_ip_etcnet "$subif" "${gw_ip}/${prefix}" "" "$vlan_id" "$TRUNK_IFACE"
 }
 
-create_vlan_subif 10 "192.168.10.1" "24" "Management" \
-    && STATUS["vlan10"]="OK" || STATUS["vlan10"]="ERROR"
-save_static_ip_etcnet "${TRUNK_IFACE}.10" "192.168.10.1/24"
+if create_vlan_subif 10 "192.168.10.1" "24" "Management"; then
+    STATUS["vlan10"]="OK"
+else
+    STATUS["vlan10"]="ERROR"
+fi
 
-create_vlan_subif 20 "192.168.20.1" "24" "Users" \
-    && STATUS["vlan20"]="OK" || STATUS["vlan20"]="ERROR"
-save_static_ip_etcnet "${TRUNK_IFACE}.20" "192.168.20.1/24"
+if create_vlan_subif 20 "192.168.20.1" "24" "Users"; then
+    STATUS["vlan20"]="OK"
+else
+    STATUS["vlan20"]="ERROR"
+fi
 
 # ─── Включение IP forwarding (надёжный способ для Альт Линукс) ───────────────
 info "Включение IP forwarding..."
