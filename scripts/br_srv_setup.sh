@@ -163,11 +163,12 @@ else
         fi
     }
 
-    set_sshd_param "Port"            "2026"
-    set_sshd_param "AllowUsers"      "sshuser"
-    set_sshd_param "MaxAuthTries"    "2"
-    set_sshd_param "PermitRootLogin" "no"
-    set_sshd_param "Banner"          "/etc/ssh/banner"
+    set_sshd_param "Port"                  "2026"
+    set_sshd_param "AllowUsers"            "sshuser"
+    set_sshd_param "MaxAuthTries"          "2"
+    set_sshd_param "PermitRootLogin"       "no"
+    set_sshd_param "PasswordAuthentication" "yes"
+    set_sshd_param "Banner"                "/etc/ssh/banner"
 
     # Проверка конфига
     if sshd -t 2>/dev/null; then

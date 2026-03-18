@@ -127,18 +127,19 @@ else
     # Функция установки/замены параметра sshd_config
     set_sshd_param() {
         local param="$1" value="$2"
-        if grep -qE "^#?${param}" "$SSHD_CONF"; then
-            sed -i "s|^#*\s*${param}.*|${param} ${value}|" "$SSHD_CONF"
+        if grep -qE "^#?[[:space:]]*${param}[[:space:]]" "$SSHD_CONF"; then
+            sed -i "s|^#*[[:space:]]*${param}[[:space:]].*|${param} ${value}|" "$SSHD_CONF"
         else
             echo "${param} ${value}" >> "$SSHD_CONF"
         fi
     }
 
-    set_sshd_param "Port"           "2026"
-    set_sshd_param "AllowUsers"     "sshuser"
-    set_sshd_param "MaxAuthTries"   "2"
-    set_sshd_param "PermitRootLogin" "no"
-    set_sshd_param "Banner"         "/etc/ssh/banner"
+    set_sshd_param "Port"                  "2026"
+    set_sshd_param "AllowUsers"            "sshuser"
+    set_sshd_param "MaxAuthTries"          "2"
+    set_sshd_param "PermitRootLogin"       "no"
+    set_sshd_param "PasswordAuthentication" "yes"
+    set_sshd_param "Banner"                "/etc/ssh/banner"
 
     # Проверяем конфиг
     if sshd -t 2>/dev/null; then
