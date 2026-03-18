@@ -60,6 +60,7 @@ sudo bash scripts/variant4_gre_dns.sh
 | `scripts/br_rtr_setup.sh` | BR-RTR | Альт JeOS / Linux | 1, 3, 6, 7, 8 |
 | `scripts/hq_srv_setup.sh` | HQ-SRV | Альт сервер | 1, 3, 5, 10 |
 | `scripts/br_srv_setup.sh` | BR-SRV | Альт сервер | 1, 3, 5 |
+| `scripts/hq_cli_setup.sh` | HQ-CLI | Альт рабочая станция / Linux | 1, 3, 5 |
 
 ---
 
@@ -107,7 +108,7 @@ DNS-форвардеры: `77.88.8.7`, `77.88.8.3`
 #### Общие требования
 - Запуск **от имени root** (`sudo bash <скрипт>` или `su -` → `bash <скрипт>`)
 - Скрипты интерактивны — значения по умолчанию указаны в квадратных скобках
-- Рекомендуемый порядок запуска: ISP → HQ-RTR → BR-RTR → HQ-SRV → BR-SRV
+- Рекомендуемый порядок запуска: ISP → HQ-RTR → BR-RTR → HQ-SRV → BR-SRV → HQ-CLI
 
 #### `scripts/isp_setup.sh` — настройка ISP (Альт сервер)
 ```bash
@@ -146,6 +147,14 @@ sudo bash scripts/br_srv_setup.sh
 ```
 **Что делает:** hostname, IP (192.168.3.2/28), пользователь `sshuser` (uid=2026),
 SSH на порту 2026 с баннером.
+
+#### `scripts/hq_cli_setup.sh` — настройка HQ-CLI
+```bash
+sudo bash scripts/hq_cli_setup.sh
+```
+**Что делает:** hostname `hq-cli.au-team.irpo`, настройка DHCP на интерфейсе
+(пул 192.168.2.50–192.168.2.100, шлюз 192.168.2.1, VLAN 200),
+пользователь `sshuser` (uid=2026), SSH на порту 2026 с баннером.
 
 ---
 
