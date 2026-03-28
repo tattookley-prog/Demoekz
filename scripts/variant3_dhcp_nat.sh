@@ -33,6 +33,9 @@ save_static_ip_etcnet() {
 BOOTPROTO=static
 ONBOOT=yes
 TYPE=eth
+DISABLED=no
+NM_CONTROLLED=no
+CONFIG_IPV4=yes
 EOF
 
     # ipv4address — статический адрес с маской
@@ -188,7 +191,14 @@ STATUS["ip_wan"]="OK"
 
 # WAN — DHCP, сохраняем тип в etcnet
 mkdir -p "/etc/net/ifaces/${WAN_IFACE}"
-printf 'BOOTPROTO=dhcp\nONBOOT=yes\nTYPE=eth\n' > "/etc/net/ifaces/${WAN_IFACE}/options"
+cat > "/etc/net/ifaces/${WAN_IFACE}/options" <<EOF
+BOOTPROTO=dhcp
+ONBOOT=yes
+TYPE=eth
+DISABLED=no
+NM_CONTROLLED=no
+CONFIG_IPV4=yes
+EOF
 ok "etcnet: WAN ${WAN_IFACE} — DHCP, конфиг сохранён"
 
 # ─── 2. IP forwarding ─────────────────────────────────────────────────────────
