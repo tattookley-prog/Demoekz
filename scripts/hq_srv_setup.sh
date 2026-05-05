@@ -109,6 +109,18 @@ chmod 440 /etc/sudoers.d/sshuser
 ok "Пароль sshuser установлен, sudo без пароля настроен"
 STATUS["sshuser"]="OK"
 
+# ─── 4a. Пользователь remote_user (задание 3) ────────────────────────────────
+info "[Задание 3] Создание пользователя remote_user..."
+if ! id remote_user &>/dev/null; then
+    useradd -m -s /bin/bash remote_user
+    ok "Пользователь remote_user создан"
+else
+    warn "Пользователь remote_user уже существует"
+fi
+echo "remote_user:P@ssw0rd" | chpasswd
+ok "Пароль remote_user установлен"
+STATUS["remote_user"]="OK"
+
 # ─── 5. Настройка SSH (задание 5) ─────────────────────────────────────────────
 info "[Задание 5] Настройка SSH: порт 2026, AllowUsers sshuser, MaxAuthTries 2, баннер..."
 
@@ -329,7 +341,7 @@ echo
 echo "============================================================"
 echo "  Итог настройки HQ-SRV"
 echo "============================================================"
-for key in hostname timezone ip sshuser ssh dns; do
+for key in hostname timezone ip sshuser remote_user ssh dns; do
     val="${STATUS[$key]:-SKIP}"
     case "$val" in
         OK)    echo -e "  ${GREEN}[OK]${NC}    $key" ;;
