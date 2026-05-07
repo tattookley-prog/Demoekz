@@ -69,6 +69,7 @@ HAS_NMCLI=0
 if command -v nmcli &>/dev/null; then
     HAS_NMCLI=1
 fi
+readonly HAS_NMCLI
 
 etcnet_static_iface() {
     local iface="$1" ip_cidr="$2" gateway="${3:-}" dns_servers="${4:-}"
@@ -96,7 +97,7 @@ EOF
     fi
 
     if [[ -n "$dns_servers" ]]; then
-        : > "${dir}/resolv.conf"
+        > "${dir}/resolv.conf"
         for dns in $dns_servers; do
             echo "nameserver ${dns}" >> "${dir}/resolv.conf"
         done
@@ -177,8 +178,7 @@ if (( HAS_NMCLI )); then
     nmcli con up "wan-${WAN_IFACE}"
 else
     warn "nmcli не найден — применяю fallback через ip/etcnet для WAN"
-    ip addr flush dev "$WAN_IFACE" 2>/dev/null || true
-    ip addr add "172.16.1.2/28" dev "$WAN_IFACE"
+    ip addr replace "172.16.1.2/28" dev "$WAN_IFACE"
     ip link set "$WAN_IFACE" up
     ip route replace default via "172.16.1.1" dev "$WAN_IFACE"
     etcnet_static_iface "$WAN_IFACE" "172.16.1.2/28" "172.16.1.1" "77.88.8.7 77.88.8.3"
@@ -203,7 +203,6 @@ create_vlan() {
         warn "nmcli не найден — применяю fallback через ip/etcnet для VLAN ${vlan_id}"
         ip link del "${LAN_IFACE}.${vlan_id}" 2>/dev/null || true
         ip link add link "$LAN_IFACE" name "${LAN_IFACE}.${vlan_id}" type vlan id "$vlan_id"
-        ip addr flush dev "${LAN_IFACE}.${vlan_id}" 2>/dev/null || true
         ip addr add "$ip" dev "${LAN_IFACE}.${vlan_id}"
         ip link set "$LAN_IFACE" up
         ip link set "${LAN_IFACE}.${vlan_id}" up
