@@ -65,6 +65,87 @@ if [[ ! "${CONFIRM,,}" =~ ^y ]]; then
 fi
 
 declare -A STATUS
+HAS_NMCLI=0
+if command -v nmcli &>/dev/null; then
+    HAS_NMCLI=1
+fi
+
+etcnet_static_iface() {
+    local iface="$1" ip_cidr="$2" gateway="${3:-}" dns_servers="${4:-}"
+    local dir="/etc/net/ifaces/${iface}"
+
+    mkdir -p "$dir"
+    [[ -f "${dir}/options" ]] && cp "${dir}/options" "${dir}/options.bak"
+    [[ -f "${dir}/ipv4address" ]] && cp "${dir}/ipv4address" "${dir}/ipv4address.bak"
+    [[ -f "${dir}/ipv4route" ]] && cp "${dir}/ipv4route" "${dir}/ipv4route.bak"
+
+    cat > "${dir}/options" <<EOF
+BOOTPROTO=static
+TYPE=eth
+ONBOOT=yes
+DISABLED=no
+NM_CONTROLLED=no
+CONFIG_IPV4=yes
+EOF
+    echo "$ip_cidr" > "${dir}/ipv4address"
+
+    if [[ -n "$gateway" ]]; then
+        echo "default via ${gateway}" > "${dir}/ipv4route"
+    else
+        rm -f "${dir}/ipv4route"
+    fi
+
+    if [[ -n "$dns_servers" ]]; then
+        : > "${dir}/resolv.conf"
+        for dns in $dns_servers; do
+            echo "nameserver ${dns}" >> "${dir}/resolv.conf"
+        done
+    fi
+}
+
+etcnet_vlan_iface() {
+    local parent_iface="$1" vlan_id="$2" ip_cidr="$3"
+    local iface="${parent_iface}.${vlan_id}"
+    local dir="/etc/net/ifaces/${iface}"
+
+    mkdir -p "$dir"
+    [[ -f "${dir}/options" ]] && cp "${dir}/options" "${dir}/options.bak"
+    [[ -f "${dir}/ipv4address" ]] && cp "${dir}/ipv4address" "${dir}/ipv4address.bak"
+
+    cat > "${dir}/options" <<EOF
+BOOTPROTO=static
+TYPE=vlan
+VID=${vlan_id}
+HOST=${parent_iface}
+ONBOOT=yes
+DISABLED=no
+NM_CONTROLLED=no
+CONFIG_IPV4=yes
+EOF
+    echo "$ip_cidr" > "${dir}/ipv4address"
+}
+
+etcnet_gre_iface() {
+    local iface="$1" local_ip="$2" remote_ip="$3" tunnel_ip="$4"
+    local dir="/etc/net/ifaces/${iface}"
+
+    mkdir -p "$dir"
+    [[ -f "${dir}/options" ]] && cp "${dir}/options" "${dir}/options.bak"
+    [[ -f "${dir}/ipv4address" ]] && cp "${dir}/ipv4address" "${dir}/ipv4address.bak"
+
+    cat > "${dir}/options" <<EOF
+BOOTPROTO=static
+TYPE=iptun
+TUNTYPE=gre
+TUNLOCAL=${local_ip}
+TUNREMOTE=${remote_ip}
+ONBOOT=yes
+DISABLED=no
+NM_CONTROLLED=no
+CONFIG_IPV4=yes
+EOF
+    echo "$tunnel_ip" > "${dir}/ipv4address"
+}
 
 # ─── 1. Hostname ──────────────────────────────────────────────────────────────
 info "Устанавливаю hostname: hq-rtr.au-team.irpo"
@@ -85,14 +166,23 @@ fi
 # ─── 3. IP-адресация (задание 1) — WAN ───────────────────────────────────────
 info "[Задание 1] Настройка IP на WAN ($WAN_IFACE): 172.16.1.2/28, шлюз 172.16.1.1"
 
-nmcli con delete "wan-${WAN_IFACE}" &>/dev/null || true
-nmcli con add type ethernet ifname "$WAN_IFACE" con-name "wan-${WAN_IFACE}" \
-    ipv4.method manual \
-    ipv4.addresses "172.16.1.2/28" \
-    ipv4.gateway "172.16.1.1" \
-    ipv4.dns "77.88.8.7 77.88.8.3" \
-    connection.autoconnect yes
-nmcli con up "wan-${WAN_IFACE}"
+if (( HAS_NMCLI )); then
+    nmcli con delete "wan-${WAN_IFACE}" &>/dev/null || true
+    nmcli con add type ethernet ifname "$WAN_IFACE" con-name "wan-${WAN_IFACE}" \
+        ipv4.method manual \
+        ipv4.addresses "172.16.1.2/28" \
+        ipv4.gateway "172.16.1.1" \
+        ipv4.dns "77.88.8.7 77.88.8.3" \
+        connection.autoconnect yes
+    nmcli con up "wan-${WAN_IFACE}"
+else
+    warn "nmcli не найден — применяю fallback через ip/etcnet для WAN"
+    ip addr flush dev "$WAN_IFACE" 2>/dev/null || true
+    ip addr add "172.16.1.2/28" dev "$WAN_IFACE"
+    ip link set "$WAN_IFACE" up
+    ip route replace default via "172.16.1.1" dev "$WAN_IFACE"
+    etcnet_static_iface "$WAN_IFACE" "172.16.1.2/28" "172.16.1.1" "77.88.8.7 77.88.8.3"
+fi
 ok "WAN ($WAN_IFACE): 172.16.1.2/28, шлюз 172.16.1.1"
 STATUS["ip_wan"]="OK"
 
@@ -102,12 +192,23 @@ info "[Задание 4] Создание VLAN sub-интерфейсов..."
 create_vlan() {
     local vlan_id="$1" ip="$2" desc="$3"
     local con_name="vlan${vlan_id}"
-    nmcli con delete "$con_name" &>/dev/null || true
-    nmcli con add type vlan ifname "${LAN_IFACE}.${vlan_id}" con-name "$con_name" \
-        dev "$LAN_IFACE" id "$vlan_id" \
-        ipv4.method manual ipv4.addresses "$ip" \
-        connection.autoconnect yes
-    nmcli con up "$con_name"
+    if (( HAS_NMCLI )); then
+        nmcli con delete "$con_name" &>/dev/null || true
+        nmcli con add type vlan ifname "${LAN_IFACE}.${vlan_id}" con-name "$con_name" \
+            dev "$LAN_IFACE" id "$vlan_id" \
+            ipv4.method manual ipv4.addresses "$ip" \
+            connection.autoconnect yes
+        nmcli con up "$con_name"
+    else
+        warn "nmcli не найден — применяю fallback через ip/etcnet для VLAN ${vlan_id}"
+        ip link del "${LAN_IFACE}.${vlan_id}" 2>/dev/null || true
+        ip link add link "$LAN_IFACE" name "${LAN_IFACE}.${vlan_id}" type vlan id "$vlan_id"
+        ip addr flush dev "${LAN_IFACE}.${vlan_id}" 2>/dev/null || true
+        ip addr add "$ip" dev "${LAN_IFACE}.${vlan_id}"
+        ip link set "$LAN_IFACE" up
+        ip link set "${LAN_IFACE}.${vlan_id}" up
+        etcnet_vlan_iface "$LAN_IFACE" "$vlan_id" "$ip"
+    fi
     ok "VLAN $vlan_id ($desc): ${LAN_IFACE}.${vlan_id} = $ip"
 }
 
@@ -132,16 +233,24 @@ info "  local=172.16.1.2, remote=$BR_WAN_IP, tunnel IP=10.0.0.1/30"
 
 # Удаляем старый туннель если есть
 ip tunnel del gre1 2>/dev/null || true
-nmcli con delete gre1 2>/dev/null || true
+if (( HAS_NMCLI )); then
+    nmcli con delete gre1 2>/dev/null || true
 
-# Создаём через nmcli (тип ip-tunnel)
-nmcli con add type ip-tunnel ifname gre1 con-name gre1 \
-    tunnel.mode gre \
-    tunnel.local "172.16.1.2" \
-    tunnel.remote "$BR_WAN_IP" \
-    ipv4.method manual ipv4.addresses "10.0.0.1/30" \
-    connection.autoconnect yes
-nmcli con up gre1
+    # Создаём через nmcli (тип ip-tunnel)
+    nmcli con add type ip-tunnel ifname gre1 con-name gre1 \
+        tunnel.mode gre \
+        tunnel.local "172.16.1.2" \
+        tunnel.remote "$BR_WAN_IP" \
+        ipv4.method manual ipv4.addresses "10.0.0.1/30" \
+        connection.autoconnect yes
+    nmcli con up gre1
+else
+    warn "nmcli не найден — применяю fallback через ip/etcnet для GRE"
+    ip tunnel add gre1 mode gre local "172.16.1.2" remote "$BR_WAN_IP" ttl 255
+    ip addr add "10.0.0.1/30" dev gre1
+    ip link set gre1 up
+    etcnet_gre_iface "gre1" "172.16.1.2" "$BR_WAN_IP" "10.0.0.1/30"
+fi
 ok "GRE туннель gre1 создан: 10.0.0.1/30"
 STATUS["gre_tunnel"]="OK"
 
