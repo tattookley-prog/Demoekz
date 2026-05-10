@@ -110,12 +110,7 @@ ip addr add 192.168.3.2/28 dev "$NET_IFACE" 2>/dev/null || true
 ip link set "$NET_IFACE" up 2>/dev/null || true
 ip route replace default via 192.168.3.1 2>/dev/null || true
 
-# resolv.conf
-cat > /etc/resolv.conf <<EOF
-search au-team.irpo
-nameserver 127.0.0.1
-EOF
-
+# resolv.conf НЕ трогаем здесь — пропишем после запуска dnsmasq
 ok "IP настроен: 192.168.3.2/28, шлюз 192.168.3.1 (сохранено в /etc/net/ifaces)"
 STATUS["ip"]="OK"
 
@@ -281,6 +276,12 @@ EOF
     fi
 
     if [[ $DNS_STARTED -eq 1 ]]; then
+        # Пишем resolv.conf только ПОСЛЕ успешного запуска dnsmasq
+        cat > /etc/resolv.conf <<EOF
+search au-team.irpo
+nameserver 127.0.0.1
+EOF
+        ok "resolv.conf обновлён → nameserver 127.0.0.1"
         sleep 1
         if dig +short br-srv.au-team.irpo @127.0.0.1 &>/dev/null; then
             ok "DNS отвечает: br-srv.au-team.irpo → ${IP_BR_SRV}"
