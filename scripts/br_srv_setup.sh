@@ -66,7 +66,7 @@ echo "br-srv.au-team.irpo" > /etc/hostname
 ok "Hostname: br-srv.au-team.irpo"
 STATUS["hostname"]="OK"
 
-# ─── 2. Часовой пояс ────────────────────────────────────────────────────
+# ─── 2. Часовой пояс ───────────────────────��────────────────────────────
 info "Часовой пояс: $TZ_NAME"
 TZ_SET=0
 if timedatectl set-timezone "$TZ_NAME" 2>/dev/null; then
@@ -230,6 +230,16 @@ if command -v dnsmasq &>/dev/null; then
     systemctl stop systemd-resolved 2>/dev/null || true
     systemctl disable systemd-resolved 2>/dev/null || true
 
+    # Убираем myhostname из nsswitch.conf — он перехватывает hostname машины
+    # и отдаёт ::1 вместо реального IP из dnsmasq
+    if [[ -f /etc/nsswitch.conf ]]; then
+        if grep -q 'myhostname' /etc/nsswitch.conf; then
+            sed -i 's/\bmyhostname\b//' /etc/nsswitch.conf
+            sed -i 's/  */ /g' /etc/nsswitch.conf
+            ok "nsswitch.conf: убран myhostname"
+        fi
+    fi
+
     if [[ -f /etc/sysconfig/dnsmasq ]]; then
         echo 'OPTIONS=""' > /etc/sysconfig/dnsmasq
     fi
@@ -283,10 +293,11 @@ nameserver 127.0.0.1
 EOF
         ok "resolv.conf обновлён → nameserver 127.0.0.1"
         sleep 1
-        if dig +short br-srv.au-team.irpo @127.0.0.1 &>/dev/null; then
+        RESOLVED=$(getent hosts br-srv.au-team.irpo 2>/dev/null | awk '{print $1}' || true)
+        if [[ "$RESOLVED" == "$IP_BR_SRV" ]]; then
             ok "DNS отвечает: br-srv.au-team.irpo → ${IP_BR_SRV}"
         else
-            warn "dnsmasq запущен, но dig не отвечает — проверьте вручную"
+            warn "DNS проверка: ожидалось ${IP_BR_SRV}, получено '${RESOLVED}' — проверьте вручную"
         fi
         STATUS["dns"]="OK"
     else
