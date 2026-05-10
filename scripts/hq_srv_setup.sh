@@ -68,12 +68,10 @@ STATUS["hostname"]="OK"
 # ─── 2. Часовой пояс ─────────────────────────────────────────────────────────
 info "Часовой пояс: $TZ_NAME"
 TZ_SET=0
-# Пробуем timedatectl
 if timedatectl set-timezone "$TZ_NAME" 2>/dev/null; then
     ok "Часовой пояс установлен через timedatectl: $TZ_NAME"
     TZ_SET=1
 fi
-# Fallback: симлинк напрямую
 if [[ $TZ_SET -eq 0 ]]; then
     if [[ -f "/usr/share/zoneinfo/${TZ_NAME}" ]]; then
         ln -sf "/usr/share/zoneinfo/${TZ_NAME}" /etc/localtime
@@ -138,25 +136,43 @@ STATUS["remote_user"]="OK"
 # ─── 5. Настройка SSH (задание 5) ─────────────────────────────────────────────
 info "[Задание 5] Настройка SSH: порт 2026, AllowUsers sshuser, MaxAuthTries 2, баннер..."
 
-# Устанавливаем openssh-server если не установлен
-SSHD_CONF="/etc/ssh/sshd_config"
-if [[ ! -f "$SSHD_CONF" ]]; then
+# Определяем пу��ь к sshd_config (Альт Линукс vs стандартный)
+if [[ -f /etc/openssh/sshd_config ]]; then
+    SSHD_CONF="/etc/openssh/sshd_config"
+    SSH_DIR="/etc/openssh"
+elif [[ -f /etc/ssh/sshd_config ]]; then
+    SSHD_CONF="/etc/ssh/sshd_config"
+    SSH_DIR="/etc/ssh"
+else
+    # Не найден — пробуем установить
     info "openssh-server не найден, устанавливаю..."
     apt-get install -y openssh-server 2>/dev/null || \
-    apt-get install -y ssh 2>/dev/null || \
+    apt-get install -y openssh 2>/dev/null || \
     yum install -y openssh-server 2>/dev/null || true
+    # Повторно определяем путь
+    if [[ -f /etc/openssh/sshd_config ]]; then
+        SSHD_CONF="/etc/openssh/sshd_config"
+        SSH_DIR="/etc/openssh"
+    elif [[ -f /etc/ssh/sshd_config ]]; then
+        SSHD_CONF="/etc/ssh/sshd_config"
+        SSH_DIR="/etc/ssh"
+    else
+        SSHD_CONF=""
+        SSH_DIR=""
+    fi
 fi
 
-if [[ ! -f "$SSHD_CONF" ]]; then
-    error "Файл $SSHD_CONF не найден даже после установки"
+if [[ -z "$SSHD_CONF" ]]; then
+    error "Файл sshd_config не найден даже после установки"
     STATUS["ssh"]="ERROR"
 else
+    info "Используем конфиг: $SSHD_CONF"
     cp "$SSHD_CONF" "${SSHD_CONF}.bak"
     info "Резервная копия: ${SSHD_CONF}.bak"
 
-    # Создаём баннер
-    echo "Authorized access only" > /etc/ssh/banner
-    ok "Баннер создан: /etc/ssh/banner"
+    # Создаём баннер в том же каталоге
+    echo "Authorized access only" > "${SSH_DIR}/banner"
+    ok "Баннер создан: ${SSH_DIR}/banner"
 
     # Функция установки/замены параметра sshd_config
     set_sshd_param() {
@@ -172,7 +188,7 @@ else
     set_sshd_param "AllowUsers"      "sshuser"
     set_sshd_param "MaxAuthTries"    "2"
     set_sshd_param "PermitRootLogin" "no"
-    set_sshd_param "Banner"          "/etc/ssh/banner"
+    set_sshd_param "Banner"          "${SSH_DIR}/banner"
 
     # Проверяем конфиг
     if sshd -t 2>/dev/null; then
@@ -197,7 +213,6 @@ fi
 # ─── 6. DNS-сервер (задание 10) ──────────────────────────────────────────────
 info "[Задание 10] Настройка DNS-сервера bind/named..."
 
-# Устанавливаем bind если не установлен
 if ! command -v named &>/dev/null; then
     info "Установка bind..."
     apt-get install -y bind 2>/dev/null || \
@@ -209,15 +224,12 @@ if ! command -v named &>/dev/null; then
 fi
 
 if command -v named &>/dev/null; then
-    # Определяем систему: Альт Линукс или Debian-based
     if [[ -d /var/named ]] || [[ -f /etc/named.conf ]]; then
-        # Альт Линукс / RHEL-based
         NAMED_CONF="/etc/named.conf"
         ZONE_DIR="/var/named"
         NAMED_USER="named"
         info "Обнаружена Альт/RHEL-система, пути: $NAMED_CONF, $ZONE_DIR"
     else
-        # Debian/Ubuntu-based
         NAMED_CONF="/etc/bind/named.conf.local"
         ZONE_DIR="/var/lib/bind"
         NAMED_USER="bind"
@@ -228,11 +240,9 @@ if command -v named &>/dev/null; then
     mkdir -p "$ZONE_DIR"
     [[ -f "$NAMED_CONF" ]] && cp "$NAMED_CONF" "${NAMED_CONF}.bak"
 
-    # Разбираем октеты IP для PTR
     IFS='.' read -ra HQ_SRV_OCTETS <<< "$IP_HQ_SRV"
     IFS='.' read -ra HQ_RTR_OCTETS <<< "$IP_HQ_RTR"
 
-    # ── named.conf (для Альт Линукс — полный, для Debian — только зоны) ──
     if [[ "$NAMED_CONF" == "/etc/named.conf" ]]; then
         cat > "$NAMED_CONF" <<EOF
 // named.conf — HQ-SRV DNS-сервер
@@ -252,14 +262,12 @@ options {
     dnssec-validation no;
 };
 
-// Зона прямого просмотра
 zone "au-team.irpo" IN {
     type master;
     file "${ZONE_DIR}/au-team.irpo.zone";
     allow-update { none; };
 };
 
-// Зона обратного просмотра для 192.168.1.x
 zone "1.168.192.in-addr.arpa" IN {
     type master;
     file "${ZONE_DIR}/192.168.1.zone";
@@ -267,7 +275,6 @@ zone "1.168.192.in-addr.arpa" IN {
 };
 EOF
     else
-        # Debian: пишем только зоны в named.conf.local
         cat > "$NAMED_CONF" <<EOF
 // named.conf.local — HQ-SRV DNS зоны
 // Демоэкзамен 09.02.06 (2026)
@@ -284,7 +291,6 @@ zone "1.168.192.in-addr.arpa" IN {
     allow-update { none; };
 };
 EOF
-        # Настраиваем options (форвардеры)
         OPTS_CONF="/etc/bind/named.conf.options"
         if [[ -f "$OPTS_CONF" ]]; then
             cp "$OPTS_CONF" "${OPTS_CONF}.bak"
@@ -306,7 +312,6 @@ EOF
     fi
     ok "Сгенерирован $NAMED_CONF"
 
-    # ── Зона прямого просмотра ──
     info "Генерирую прямую зону: ${ZONE_DIR}/au-team.irpo.zone"
     cat > "${ZONE_DIR}/au-team.irpo.zone" <<EOF
 \$TTL 3600
@@ -329,7 +334,6 @@ web     IN  A   ${IP_WEB}
 EOF
     ok "Прямая зона au-team.irpo создана"
 
-    # ── Зона обратного просмотра 192.168.1.x ──
     info "Генерирую обратную зону: ${ZONE_DIR}/192.168.1.zone"
     cat > "${ZONE_DIR}/192.168.1.zone" <<EOF
 \$TTL 3600
@@ -345,25 +349,21 @@ EOF
 ${HQ_RTR_OCTETS[3]}  IN  PTR hq-rtr.au-team.irpo.
 ${HQ_SRV_OCTETS[3]}  IN  PTR hq-srv.au-team.irpo.
 EOF
-    # Добавляем PTR для HQ-CLI если он в 192.168.1.x
     IFS='.' read -ra HQ_CLI_OCTS <<< "$IP_HQ_CLI"
     if [[ "${HQ_CLI_OCTS[0]}.${HQ_CLI_OCTS[1]}.${HQ_CLI_OCTS[2]}" == "192.168.1" ]]; then
         echo "${HQ_CLI_OCTS[3]}  IN  PTR hq-cli.au-team.irpo." >> "${ZONE_DIR}/192.168.1.zone"
     fi
     ok "Обратная зона 192.168.1.x создана"
 
-    # Права на файлы зон
     chown -R "${NAMED_USER}:${NAMED_USER}" "$ZONE_DIR" 2>/dev/null || true
     chmod 640 "${ZONE_DIR}/au-team.irpo.zone" "${ZONE_DIR}/192.168.1.zone" 2>/dev/null || true
 
-    # Проверка конфига
     if named-checkconf 2>/dev/null; then
         ok "Конфиг named валиден"
     else
         warn "named-checkconf выявил ошибки, проверьте вручную"
     fi
 
-    # Запуск
     for svc in named bind9; do
         if systemctl enable --now "$svc" 2>/dev/null; then
             ok "DNS-сервер ($svc) запущен и включён"
@@ -393,5 +393,5 @@ done
 echo "============================================================"
 echo
 ok "Настройка HQ-SRV завершена!"
-info "SSH: порт 2026, пользователь sshuser"
+info "SSH: порт 2026, пользователь sshuser, конфиг: $SSHD_CONF"
 info "DNS: зона au-team.irpo, форвардеры 77.88.8.7, 77.88.8.3"

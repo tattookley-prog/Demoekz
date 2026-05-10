@@ -57,12 +57,10 @@ STATUS["hostname"]="OK"
 # ─── 2. Часовой пояс ─────────────────────────────────────────────────────────
 info "Часовой пояс: $TZ_NAME"
 TZ_SET=0
-# Пробуем timedatectl
 if timedatectl set-timezone "$TZ_NAME" 2>/dev/null; then
     ok "Часовой пояс установлен через timedatectl: $TZ_NAME"
     TZ_SET=1
 fi
-# Fallback: симлинк напрямую
 if [[ $TZ_SET -eq 0 ]]; then
     if [[ -f "/usr/share/zoneinfo/${TZ_NAME}" ]]; then
         ln -sf "/usr/share/zoneinfo/${TZ_NAME}" /etc/localtime
@@ -96,7 +94,6 @@ else
     ip link set "$NET_IFACE" up
     ip route replace default via 192.168.3.1 2>/dev/null || true
 
-    # DNS — указываем HQ-SRV
     RESOLV="/etc/resolv.conf"
     [[ -f "$RESOLV" ]] && cp "$RESOLV" "${RESOLV}.bak"
     cat > "$RESOLV" <<EOF
@@ -137,27 +134,41 @@ STATUS["remote_user"]="OK"
 # ─── 5. Настройка SSH (задание 5) ─────────────────────────────────────────────
 info "[Задание 5] Настройка SSH: порт 2026, AllowUsers sshuser, MaxAuthTries 2, баннер..."
 
-# Устанавливаем openssh-server если не установлен
-SSHD_CONF="/etc/ssh/sshd_config"
-if [[ ! -f "$SSHD_CONF" ]]; then
+# Определяем путь к sshd_config (Альт Линукс vs стандартный)
+if [[ -f /etc/openssh/sshd_config ]]; then
+    SSHD_CONF="/etc/openssh/sshd_config"
+    SSH_DIR="/etc/openssh"
+elif [[ -f /etc/ssh/sshd_config ]]; then
+    SSHD_CONF="/etc/ssh/sshd_config"
+    SSH_DIR="/etc/ssh"
+else
     info "openssh-server не найден, устанавливаю..."
     apt-get install -y openssh-server 2>/dev/null || \
-    apt-get install -y ssh 2>/dev/null || \
+    apt-get install -y openssh 2>/dev/null || \
     yum install -y openssh-server 2>/dev/null || true
+    if [[ -f /etc/openssh/sshd_config ]]; then
+        SSHD_CONF="/etc/openssh/sshd_config"
+        SSH_DIR="/etc/openssh"
+    elif [[ -f /etc/ssh/sshd_config ]]; then
+        SSHD_CONF="/etc/ssh/sshd_config"
+        SSH_DIR="/etc/ssh"
+    else
+        SSHD_CONF=""
+        SSH_DIR=""
+    fi
 fi
 
-if [[ ! -f "$SSHD_CONF" ]]; then
-    error "Файл $SSHD_CONF не найден даже после установки"
+if [[ -z "$SSHD_CONF" ]]; then
+    error "Файл sshd_config не найден даже после установки"
     STATUS["ssh"]="ERROR"
 else
+    info "Используем конфиг: $SSHD_CONF"
     cp "$SSHD_CONF" "${SSHD_CONF}.bak"
     info "Резервная копия: ${SSHD_CONF}.bak"
 
-    # Создаём баннер
-    echo "Authorized access only" > /etc/ssh/banner
-    ok "Баннер создан: /etc/ssh/banner"
+    echo "Authorized access only" > "${SSH_DIR}/banner"
+    ok "Баннер создан: ${SSH_DIR}/banner"
 
-    # Функция установки/замены параметра sshd_config
     set_sshd_param() {
         local param="$1" value="$2"
         if grep -qE "^#?\s*${param}\s" "$SSHD_CONF"; then
@@ -171,16 +182,14 @@ else
     set_sshd_param "AllowUsers"      "sshuser"
     set_sshd_param "MaxAuthTries"    "2"
     set_sshd_param "PermitRootLogin" "no"
-    set_sshd_param "Banner"          "/etc/ssh/banner"
+    set_sshd_param "Banner"          "${SSH_DIR}/banner"
 
-    # Проверка конфига
     if sshd -t 2>/dev/null; then
         ok "Конфиг SSH валиден"
     else
         warn "Конфиг SSH может содержать ошибки — проверьте вручную"
     fi
 
-    # Перезапуск sshd
     if systemctl enable sshd 2>/dev/null && systemctl restart sshd 2>/dev/null; then
         ok "sshd перезапущен (порт 2026)"
         STATUS["ssh"]="OK"
@@ -209,5 +218,5 @@ done
 echo "============================================================"
 echo
 ok "Настройка BR-SRV завершена!"
-info "SSH: порт 2026, пользователь sshuser"
+info "SSH: порт 2026, пользователь sshuser, конфиг: $SSHD_CONF"
 info "IP: 192.168.3.2/28, шлюз 192.168.3.1"
