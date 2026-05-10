@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-# ─── Цветной вывод ────────────────────────────────────────────────────────────
+# ─── Цветной вывод ─────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'
 NC='\033[0m'
 
@@ -14,7 +14,7 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
-# ─── Проверка root ────────────────────────────────────────────────────────────
+# ─── Проверка root ──────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
     error "Скрипт должен быть запущен от имени root (sudo или su -)"
     exit 1
@@ -27,12 +27,12 @@ echo "  Задания: 1, 4, 6, 7, 8, 9"
 echo "============================================================"
 echo
 
-# ─── Интерактивный ввод параметров ───────────────────────────────────────────
-read -rp "Имя WAN-интерфейса (в сторону ISP) [eth0]: " WAN_IFACE
-WAN_IFACE="${WAN_IFACE:-eth0}"
+# ─── Интерактивный ввод параметров ─────────────────────────────────────────
+read -rp "Имя WAN-интерфейса (в сторону ISP) [ens18]: " WAN_IFACE
+WAN_IFACE="${WAN_IFACE:-ens18}"
 
-read -rp "Имя физического LAN-интерфейса (для VLAN) [eth1]: " LAN_IFACE
-LAN_IFACE="${LAN_IFACE:-eth1}"
+read -rp "Имя LAN-интерфейса (в сторону HQ-SRV) [ens19]: " LAN_IFACE
+LAN_IFACE="${LAN_IFACE:-ens19}"
 
 read -rp "Часовой пояс [Europe/Moscow]: " TZ_NAME
 TZ_NAME="${TZ_NAME:-Europe/Moscow}"
@@ -49,14 +49,11 @@ HQ_SRV_IP="${HQ_SRV_IP:-192.168.1.2}"
 
 echo
 info "Параметры конфигурации:"
-echo "  WAN интерфейс:     $WAN_IFACE (172.16.1.2/28, шлюз 172.16.1.1)"
-echo "  LAN интерфейс:     $LAN_IFACE"
-echo "  VLAN 100 (HQ-SRV): ${LAN_IFACE}.100 — 192.168.1.1/27"
-echo "  VLAN 200 (HQ-CLI): ${LAN_IFACE}.200 — 192.168.2.1/27"
-echo "  VLAN 999 (Mgmt):   ${LAN_IFACE}.999 — 192.168.99.1/29"
-echo "  GRE туннель:       local=172.16.1.2, remote=$BR_WAN_IP, tunnel=10.0.0.1/30"
-echo "  Часовой пояс:      $TZ_NAME"
-echo "  DNS для DHCP:      $HQ_SRV_IP"
+echo "  WAN интерфейс:  $WAN_IFACE (172.16.1.2/28, шлюз 172.16.1.1)"
+echo "  LAN интерфейс:  $LAN_IFACE (192.168.1.1/27 — сторона HQ-SRV)"
+echo "  GRE туннель:    local=172.16.1.2, remote=$BR_WAN_IP, tunnel=10.0.0.1/30"
+echo "  Часовой пояс:   $TZ_NAME"
+echo "  DNS для DHCP:   $HQ_SRV_IP"
 echo
 read -rp "Продолжить? [y/N]: " CONFIRM
 if [[ ! "${CONFIRM,,}" =~ ^y ]]; then
@@ -65,95 +62,14 @@ if [[ ! "${CONFIRM,,}" =~ ^y ]]; then
 fi
 
 declare -A STATUS
-HAS_NMCLI=0
-if command -v nmcli &>/dev/null; then
-    HAS_NMCLI=1
-fi
 
-etcnet_static_iface() {
-    local iface="$1" ip_cidr="$2" gateway="${3:-}" dns_servers="${4:-}"
-    local dir="/etc/net/ifaces/${iface}"
-
-    mkdir -p "$dir"
-    [[ -f "${dir}/options" ]] && cp "${dir}/options" "${dir}/options.bak"
-    [[ -f "${dir}/ipv4address" ]] && cp "${dir}/ipv4address" "${dir}/ipv4address.bak"
-    [[ -f "${dir}/ipv4route" ]] && cp "${dir}/ipv4route" "${dir}/ipv4route.bak"
-
-    cat > "${dir}/options" <<EOF
-BOOTPROTO=static
-TYPE=eth
-ONBOOT=yes
-DISABLED=no
-NM_CONTROLLED=no
-CONFIG_IPV4=yes
-EOF
-    echo "$ip_cidr" > "${dir}/ipv4address"
-
-    if [[ -n "$gateway" ]]; then
-        echo "default via ${gateway}" > "${dir}/ipv4route"
-    else
-        rm -f "${dir}/ipv4route"
-    fi
-
-    if [[ -n "$dns_servers" ]]; then
-        : > "${dir}/resolv.conf"
-        for dns in $dns_servers; do
-            echo "nameserver ${dns}" >> "${dir}/resolv.conf"
-        done
-    fi
-}
-
-etcnet_vlan_iface() {
-    local parent_iface="$1" vlan_id="$2" ip_cidr="$3"
-    local iface="${parent_iface}.${vlan_id}"
-    local dir="/etc/net/ifaces/${iface}"
-
-    mkdir -p "$dir"
-    [[ -f "${dir}/options" ]] && cp "${dir}/options" "${dir}/options.bak"
-    [[ -f "${dir}/ipv4address" ]] && cp "${dir}/ipv4address" "${dir}/ipv4address.bak"
-
-    cat > "${dir}/options" <<EOF
-BOOTPROTO=static
-TYPE=vlan
-VID=${vlan_id}
-HOST=${parent_iface}
-ONBOOT=yes
-DISABLED=no
-NM_CONTROLLED=no
-CONFIG_IPV4=yes
-EOF
-    echo "$ip_cidr" > "${dir}/ipv4address"
-}
-
-etcnet_gre_iface() {
-    local iface="$1" local_ip="$2" remote_ip="$3" tunnel_ip="$4"
-    local dir="/etc/net/ifaces/${iface}"
-
-    mkdir -p "$dir"
-    [[ -f "${dir}/options" ]] && cp "${dir}/options" "${dir}/options.bak"
-    [[ -f "${dir}/ipv4address" ]] && cp "${dir}/ipv4address" "${dir}/ipv4address.bak"
-
-    cat > "${dir}/options" <<EOF
-BOOTPROTO=static
-TYPE=iptun
-TUNTYPE=gre
-TUNLOCAL=${local_ip}
-TUNREMOTE=${remote_ip}
-ONBOOT=yes
-DISABLED=no
-NM_CONTROLLED=no
-CONFIG_IPV4=yes
-EOF
-    echo "$tunnel_ip" > "${dir}/ipv4address"
-}
-
-# ─── 1. Hostname ──────────────────────────────────────────────────────────────
+# ─── 1. Hostname ────────────────────────────────────────────────────────────
 info "Устанавливаю hostname: hq-rtr.au-team.irpo"
 hostnamectl set-hostname hq-rtr.au-team.irpo
 ok "Hostname: hq-rtr.au-team.irpo"
 STATUS["hostname"]="OK"
 
-# ─── 2. Часовой пояс ─────────────────────────────────────────────────────────
+# ─── 2. Часовой пояс ────────────────────────────────────────────────────────
 info "Часовой пояс: $TZ_NAME"
 if timedatectl set-timezone "$TZ_NAME" 2>/dev/null; then
     ok "Часовой пояс установлен: $TZ_NAME"
@@ -163,10 +79,22 @@ else
     STATUS["timezone"]="ERROR"
 fi
 
-# ─── 3. IP-адресация (задание 1) — WAN ───────────────────────────────────────
-info "[Задание 1] Настройка IP на WAN ($WAN_IFACE): 172.16.1.2/28, шлюз 172.16.1.1"
+# ─── 3. IP forwarding ───────────────────────────────────────────────────────
+info "Включение IP forwarding..."
+if grep -q '^net.ipv4.ip_forward' /etc/sysctl.conf 2>/dev/null; then
+    sed -i 's/^#*\s*net\.ipv4\.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
+else
+    echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+fi
+echo 1 > /proc/sys/net/ipv4/ip_forward
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+ok "IP forwarding включён"
+STATUS["ip_forward"]="OK"
 
-if (( HAS_NMCLI )); then
+# ─── 4. IP-адресация WAN (задание 1) ────────────────────────────────────────
+info "[Задание 1] Настройка WAN ($WAN_IFACE): 172.16.1.2/28, шлюз 172.16.1.1"
+
+if command -v nmcli &>/dev/null; then
     nmcli con delete "wan-${WAN_IFACE}" &>/dev/null || true
     nmcli con add type ethernet ifname "$WAN_IFACE" con-name "wan-${WAN_IFACE}" \
         ipv4.method manual \
@@ -176,67 +104,87 @@ if (( HAS_NMCLI )); then
         connection.autoconnect yes
     nmcli con up "wan-${WAN_IFACE}"
 else
-    warn "nmcli не найден — применяю fallback через ip/etcnet для WAN"
     ip addr flush dev "$WAN_IFACE" 2>/dev/null || true
-    ip addr add "172.16.1.2/28" dev "$WAN_IFACE"
+    ip addr add 172.16.1.2/28 dev "$WAN_IFACE"
     ip link set "$WAN_IFACE" up
-    ip route replace default via "172.16.1.1" dev "$WAN_IFACE"
-    etcnet_static_iface "$WAN_IFACE" "172.16.1.2/28" "172.16.1.1" "77.88.8.7 77.88.8.3"
+    ip route replace default via 172.16.1.1 dev "$WAN_IFACE"
 fi
 ok "WAN ($WAN_IFACE): 172.16.1.2/28, шлюз 172.16.1.1"
 STATUS["ip_wan"]="OK"
 
-# ─── 4. VLAN sub-интерфейсы (задание 4) ──────────────────────────────────────
-info "[Задание 4] Создание VLAN sub-интерфейсов..."
+# ─── 5. IP-адресация LAN (задание 1) — прямо на ens19 ──────────────────────
+info "[Задание 1] Настройка LAN ($LAN_IFACE): 192.168.1.1/27"
 
-create_vlan() {
-    local vlan_id="$1" ip="$2" desc="$3"
-    local con_name="vlan${vlan_id}"
-    if (( HAS_NMCLI )); then
-        nmcli con delete "$con_name" &>/dev/null || true
-        nmcli con add type vlan ifname "${LAN_IFACE}.${vlan_id}" con-name "$con_name" \
-            dev "$LAN_IFACE" id "$vlan_id" \
-            ipv4.method manual ipv4.addresses "$ip" \
-            connection.autoconnect yes
-        nmcli con up "$con_name"
-    else
-        warn "nmcli не найден — применяю fallback через ip/etcnet для VLAN ${vlan_id}"
-        ip link del "${LAN_IFACE}.${vlan_id}" 2>/dev/null || true
-        ip link add link "$LAN_IFACE" name "${LAN_IFACE}.${vlan_id}" type vlan id "$vlan_id"
-        ip addr flush dev "${LAN_IFACE}.${vlan_id}" 2>/dev/null || true
-        ip addr add "$ip" dev "${LAN_IFACE}.${vlan_id}"
-        ip link set "$LAN_IFACE" up
-        ip link set "${LAN_IFACE}.${vlan_id}" up
-        etcnet_vlan_iface "$LAN_IFACE" "$vlan_id" "$ip"
-    fi
-    ok "VLAN $vlan_id ($desc): ${LAN_IFACE}.${vlan_id} = $ip"
-}
-
-create_vlan 100 "192.168.1.1/27"  "HQ-SRV"  && STATUS["vlan100"]="OK"  || STATUS["vlan100"]="ERROR"
-create_vlan 200 "192.168.2.1/27"  "HQ-CLI"  && STATUS["vlan200"]="OK"  || STATUS["vlan200"]="ERROR"
-create_vlan 999 "192.168.99.1/29" "Управление" && STATUS["vlan999"]="OK" || STATUS["vlan999"]="ERROR"
-
-# ─── 5. IP forwarding ─────────────────────────────────────────────────────────
-info "Включение IP forwarding..."
-if grep -q '^net.ipv4.ip_forward' /etc/sysctl.conf; then
-    sed -i 's/^#*\s*net\.ipv4\.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
+if command -v nmcli &>/dev/null; then
+    nmcli con delete "lan-${LAN_IFACE}" &>/dev/null || true
+    nmcli con add type ethernet ifname "$LAN_IFACE" con-name "lan-${LAN_IFACE}" \
+        ipv4.method manual \
+        ipv4.addresses "192.168.1.1/27" \
+        connection.autoconnect yes
+    nmcli con up "lan-${LAN_IFACE}"
 else
-    echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+    ip addr flush dev "$LAN_IFACE" 2>/dev/null || true
+    ip addr add 192.168.1.1/27 dev "$LAN_IFACE"
+    ip link set "$LAN_IFACE" up
 fi
-sysctl -w net.ipv4.ip_forward=1 >/dev/null
-ok "IP forwarding включён"
-STATUS["ip_forward"]="OK"
+ok "LAN ($LAN_IFACE): 192.168.1.1/27"
+STATUS["ip_lan"]="OK"
 
-# ─── 6. GRE-туннель (задание 6) ──────────────────────────────────────────────
+# ─── 6. NAT через iptables (задание 8) ──────────────────────────────────────
+info "[Задание 8] Настройка NAT (MASQUERADE) через iptables..."
+
+# Устанавливаем iptables если нет
+if ! command -v iptables &>/dev/null; then
+    apt-get install -y iptables || {
+        error "Не удалось установить iptables"
+        STATUS["nat"]="ERROR"
+    }
+fi
+
+if command -v iptables &>/dev/null; then
+    # Сбрасываем старые правила NAT
+    iptables -t nat -F POSTROUTING 2>/dev/null || true
+
+    # Добавляем MASQUERADE для LAN → WAN
+    iptables -t nat -A POSTROUTING -o "$WAN_IFACE" -j MASQUERADE
+    ok "NAT: MASQUERADE добавлен (out: $WAN_IFACE)"
+
+    # Сохраняем правила iptables
+    if command -v iptables-save &>/dev/null; then
+        mkdir -p /etc/iptables
+        iptables-save > /etc/iptables/rules.v4
+        ok "Правила iptables сохранены: /etc/iptables/rules.v4"
+    fi
+
+    # Автозагрузка правил при старте (через rc.local если нет iptables-persistent)
+    RC_LOCAL="/etc/rc.local"
+    if [[ ! -f "$RC_LOCAL" ]] || ! grep -q "iptables-restore" "$RC_LOCAL"; then
+        cat > "$RC_LOCAL" <<'EOF'
+#!/bin/bash
+# Восстановление правил iptables при старте
+if [[ -f /etc/iptables/rules.v4 ]]; then
+    iptables-restore < /etc/iptables/rules.v4
+fi
+echo 1 > /proc/sys/net/ipv4/ip_forward
+exit 0
+EOF
+        chmod +x "$RC_LOCAL"
+        ok "Автозагрузка NAT добавлена в $RC_LOCAL"
+    fi
+
+    STATUS["nat"]="OK"
+else
+    warn "iptables не найден, пропускаю NAT"
+    STATUS["nat"]="SKIP"
+fi
+
+# ─── 7. GRE-туннель (задание 6) ─────────────────────────────────────────────
 info "[Задание 6] Создание GRE-туннеля gre1..."
 info "  local=172.16.1.2, remote=$BR_WAN_IP, tunnel IP=10.0.0.1/30"
 
-# Удаляем старый туннель если есть
 ip tunnel del gre1 2>/dev/null || true
-if (( HAS_NMCLI )); then
+if command -v nmcli &>/dev/null; then
     nmcli con delete gre1 2>/dev/null || true
-
-    # Создаём через nmcli (тип ip-tunnel)
     nmcli con add type ip-tunnel ifname gre1 con-name gre1 \
         tunnel.mode gre \
         tunnel.local "172.16.1.2" \
@@ -245,19 +193,17 @@ if (( HAS_NMCLI )); then
         connection.autoconnect yes
     nmcli con up gre1
 else
-    warn "nmcli не найден — применяю fallback через ip/etcnet для GRE"
     ip tunnel add gre1 mode gre local "172.16.1.2" remote "$BR_WAN_IP" ttl 255
-    ip addr add "10.0.0.1/30" dev gre1
+    ip addr add 10.0.0.1/30 dev gre1
     ip link set gre1 up
-    etcnet_gre_iface "gre1" "172.16.1.2" "$BR_WAN_IP" "10.0.0.1/30"
 fi
 ok "GRE туннель gre1 создан: 10.0.0.1/30"
 STATUS["gre_tunnel"]="OK"
 
-# ─── 7. OSPF через FRR (задание 7) ───────────────────────────────────────────
+# ─── 8. OSPF через FRR (задание 7) ──────────────────────────────────────────
 info "[Задание 7] Настройка OSPF через FRR..."
 
-if ! command -v ospfd &>/dev/null && ! command -v vtysh &>/dev/null; then
+if ! command -v vtysh &>/dev/null; then
     info "Установка FRR..."
     apt-get install -y frr || {
         error "Не удалось установить frr"
@@ -266,7 +212,6 @@ if ! command -v ospfd &>/dev/null && ! command -v vtysh &>/dev/null; then
 fi
 
 if command -v vtysh &>/dev/null || [[ -f /etc/frr/daemons ]]; then
-    # Включаем ospfd
     FRR_DAEMONS="/etc/frr/daemons"
     if [[ -f "$FRR_DAEMONS" ]]; then
         cp "$FRR_DAEMONS" "${FRR_DAEMONS}.bak"
@@ -274,7 +219,6 @@ if command -v vtysh &>/dev/null || [[ -f /etc/frr/daemons ]]; then
         ok "ospfd включён в $FRR_DAEMONS"
     fi
 
-    # Генерируем конфиг OSPF
     FRR_OSPF="/etc/frr/frr.conf"
     [[ -f "$FRR_OSPF" ]] && cp "$FRR_OSPF" "${FRR_OSPF}.bak"
 
@@ -288,14 +232,8 @@ hostname hq-rtr.au-team.irpo
 !
 router ospf
  ospf router-id 10.0.0.1
- !
- ! Разрешаем OSPF только на туннельном интерфейсе
  network 10.0.0.0/30 area 0
- !
- ! Парольная защита
  area 0 authentication message-digest
- !
- ! Пассивный режим для всех интерфейсов кроме туннеля
  passive-interface default
  no passive-interface gre1
 !
@@ -314,52 +252,10 @@ else
     STATUS["ospf"]="SKIP"
 fi
 
-# ─── 8. NAT через nftables (задание 8) ───────────────────────────────────────
-info "[Задание 8] Настройка NAT (masquerade) для VLAN 100, 200, 999..."
-
-if ! command -v nft &>/dev/null; then
-    info "Установка nftables..."
-    apt-get install -y nftables
-fi
-
-NFT_CONF="/etc/nftables.conf"
-[[ -f "$NFT_CONF" ]] && cp "$NFT_CONF" "${NFT_CONF}.bak"
-
-cat > "$NFT_CONF" <<EOF
-#!/usr/sbin/nft -f
-# nftables конфигурация HQ-RTR — демоэкзамен 09.02.06 (2026)
-
-flush ruleset
-
-table ip nat {
-    chain postrouting {
-        type nat hook postrouting priority 100; policy accept;
-        # Masquerade VLAN 100 (HQ-SRV) → Интернет
-        iifname "${LAN_IFACE}.100" oifname "${WAN_IFACE}" masquerade
-        # Masquerade VLAN 200 (HQ-CLI) → Интернет
-        iifname "${LAN_IFACE}.200" oifname "${WAN_IFACE}" masquerade
-        # Masquerade VLAN 999 (Управление) → Интернет
-        iifname "${LAN_IFACE}.999" oifname "${WAN_IFACE}" masquerade
-    }
-}
-
-table ip filter {
-    chain forward {
-        type filter hook forward priority 0; policy accept;
-    }
-}
-EOF
-
-systemctl enable --now nftables 2>/dev/null || true
-nft -f "$NFT_CONF"
-ok "NAT (nftables) настроен для VLAN 100, 200, 999"
-STATUS["nat"]="OK"
-
-# ─── 9. DHCP для HQ-CLI (задание 9) ──────────────────────────────────────────
-info "[Задание 9] Настройка DHCP-сервера для HQ-CLI (VLAN 200: 192.168.2.0/27)..."
+# ─── 9. DHCP для HQ-CLI (задание 9) ─────────────────────────────────────────
+info "[Задание 9] Настройка DHCP-сервера для HQ-CLI (192.168.2.0/27)..."
 
 if ! command -v dhcpd &>/dev/null; then
-    info "Установка dhcp-server..."
     apt-get install -y dhcp-server || apt-get install -y isc-dhcp-server || {
         error "Не удалось установить DHCP-сервер"
         STATUS["dhcp"]="ERROR"
@@ -367,14 +263,11 @@ if ! command -v dhcpd &>/dev/null; then
 fi
 
 DHCPD_CONF="/etc/dhcp/dhcpd.conf"
-if [[ -f "$DHCPD_CONF" ]]; then
-    cp "$DHCPD_CONF" "${DHCPD_CONF}.bak"
-    info "Резервная копия: ${DHCPD_CONF}.bak"
-fi
-
+[[ -f "$DHCPD_CONF" ]] && cp "$DHCPD_CONF" "${DHCPD_CONF}.bak"
 mkdir -p /etc/dhcp
+
 cat > "$DHCPD_CONF" <<EOF
-# dhcpd.conf — HQ-RTR DHCP для HQ-CLI (VLAN 200)
+# dhcpd.conf — HQ-RTR DHCP для HQ-CLI
 # Демоэкзамен 09.02.06 (2026)
 
 option domain-name "au-team.irpo";
@@ -385,9 +278,7 @@ max-lease-time 7200;
 
 authoritative;
 
-# Подсеть VLAN 200 (HQ-CLI): 192.168.2.0/27
 subnet 192.168.2.0 netmask 255.255.255.224 {
-    # Диапазон выдачи (исключаем адрес маршрутизатора 192.168.2.1)
     range 192.168.2.2 192.168.2.30;
     option routers 192.168.2.1;
     option subnet-mask 255.255.255.224;
@@ -396,31 +287,16 @@ subnet 192.168.2.0 netmask 255.255.255.224 {
 }
 EOF
 
-# Настройка интерфейса DHCP-сервера (для Альт Линукс)
-DHCP_SYSCONF="/etc/sysconfig/dhcpd"
-if [[ -f "$DHCP_SYSCONF" ]]; then
-    cp "$DHCP_SYSCONF" "${DHCP_SYSCONF}.bak"
-    echo "DHCPDARGS=\"${LAN_IFACE}.200\"" > "$DHCP_SYSCONF"
-fi
-
-# Для isc-dhcp-server (Debian-based)
-ISC_DEFAULT="/etc/default/isc-dhcp-server"
-if [[ -f "$ISC_DEFAULT" ]]; then
-    cp "$ISC_DEFAULT" "${ISC_DEFAULT}.bak"
-    sed -i "s/^INTERFACESv4=.*/INTERFACESv4=\"${LAN_IFACE}.200\"/" "$ISC_DEFAULT"
-fi
-
-# Запуск DHCP-сервера
 for svc in dhcpd isc-dhcp-server dhcp-server; do
     if systemctl enable --now "$svc" 2>/dev/null; then
-        ok "DHCP-сервер ($svc) запущен и включён"
+        ok "DHCP-сервер ($svc) запущен"
         STATUS["dhcp"]="OK"
         break
     fi
 done
 STATUS["dhcp"]="${STATUS[dhcp]:-ERROR}"
 
-# ─── 10. Пользователь net_admin (задание 3) ───────────────────────────────────
+# ─── 10. Пользователь net_admin (задание 3) ──────────────────────────────────
 info "[Задание 3] Создание пользователя net_admin..."
 if ! id net_admin &>/dev/null; then
     useradd -m -s /bin/bash net_admin
@@ -433,12 +309,12 @@ else
 fi
 STATUS["net_admin"]="OK"
 
-# ─── Итоговый статус ──────────────────────────────────────────────────────────
+# ─── Итоговый статус ──────────────────────────────────────────────��─────────
 echo
 echo "============================================================"
 echo "  Итог настройки HQ-RTR"
 echo "============================================================"
-for key in hostname timezone ip_wan vlan100 vlan200 vlan999 ip_forward gre_tunnel ospf nat dhcp net_admin; do
+for key in hostname timezone ip_forward ip_wan ip_lan nat gre_tunnel ospf dhcp net_admin; do
     val="${STATUS[$key]:-SKIP}"
     case "$val" in
         OK)    echo -e "  ${GREEN}[OK]${NC}    $key" ;;
@@ -449,3 +325,6 @@ done
 echo "============================================================"
 echo
 ok "Настройка HQ-RTR завершена!"
+info "WAN: $WAN_IFACE (172.16.1.2/28) | LAN: $LAN_IFACE (192.168.1.1/27)"
+info "NAT: iptables MASQUERADE через $WAN_IFACE"
+info "GRE: 10.0.0.1/30 → $BR_WAN_IP"
