@@ -27,7 +27,7 @@ echo "  Задания: 1, 3, 6, 7, 8"
 echo "============================================================"
 echo
 
-# ─── Интерактивный ввод параметров ─────────────────────────────────────────
+echo "--- Общие параметры ---"
 read -rp "Имя WAN-интерфейса (в сторону ISP) [ens18]: " WAN_IFACE
 WAN_IFACE="${WAN_IFACE:-ens18}"
 
@@ -37,19 +37,64 @@ LAN_IFACE="${LAN_IFACE:-ens19}"
 read -rp "Часовой пояс [Europe/Moscow]: " TZ_NAME
 TZ_NAME="${TZ_NAME:-Europe/Moscow}"
 
-read -rp "Внешний IP HQ-RTR (WAN, для GRE-туннеля) [172.16.1.2]: " HQ_WAN_IP
+read -rp "DNS-домен [au-team.irpo]: " DOMAIN
+DOMAIN="${DOMAIN:-au-team.irpo}"
+
+echo
+echo "--- WAN ---"
+read -rp "IP/маска WAN [172.16.2.2/28]: " WAN_IP_CIDR
+WAN_IP_CIDR="${WAN_IP_CIDR:-172.16.2.2/28}"
+
+read -rp "Шлюз WAN [172.16.2.1]: " WAN_GW
+WAN_GW="${WAN_GW:-172.16.2.1}"
+
+read -rp "IP WAN без маски (для GRE local) [172.16.2.2]: " WAN_IP
+WAN_IP="${WAN_IP:-${WAN_IP_CIDR%/*}}"
+
+read -rp "Внешний IP HQ-RTR (WAN, для GRE) [172.16.1.2]: " HQ_WAN_IP
 HQ_WAN_IP="${HQ_WAN_IP:-172.16.1.2}"
+
+read -rp "DNS форвардер #1 для WAN [77.88.8.7]: " DNS_FORWARDER1
+DNS_FORWARDER1="${DNS_FORWARDER1:-77.88.8.7}"
+
+read -rp "DNS форвардер #2 для WAN [77.88.8.3]: " DNS_FORWARDER2
+DNS_FORWARDER2="${DNS_FORWARDER2:-77.88.8.3}"
+
+echo
+echo "--- LAN ---"
+read -rp "IP/маска LAN [192.168.3.1/28]: " LAN_IP_CIDR
+LAN_IP_CIDR="${LAN_IP_CIDR:-192.168.3.1/28}"
+
+echo
+echo "--- GRE / OSPF ---"
+read -rp "GRE local IP [172.16.2.2]: " GRE_LOCAL_IP
+GRE_LOCAL_IP="${GRE_LOCAL_IP:-$WAN_IP}"
+
+read -rp "IP/маска GRE-туннеля [10.0.0.2/30]: " GRE_TUNNEL_CIDR
+GRE_TUNNEL_CIDR="${GRE_TUNNEL_CIDR:-10.0.0.2/30}"
+
+read -rp "Сеть GRE для OSPF [10.0.0.0/30]: " GRE_NET
+GRE_NET="${GRE_NET:-10.0.0.0/30}"
+
+read -rp "OSPF router-id [10.0.0.2]: " OSPF_ROUTER_ID
+OSPF_ROUTER_ID="${OSPF_ROUTER_ID:-10.0.0.2}"
 
 read -rsp "Пароль OSPF [P@ssw0rd]: " OSPF_PASS
 echo
 OSPF_PASS="${OSPF_PASS:-P@ssw0rd}"
 
+HOSTNAME_FQDN="br-rtr.${DOMAIN}"
+
 echo
 info "Параметры конфигурации:"
-echo "  WAN интерфейс:  $WAN_IFACE (172.16.2.2/28, шлюз 172.16.2.1)"
-echo "  LAN интерфейс:  $LAN_IFACE (192.168.3.1/28 — сторона BR-SRV)"
-echo "  GRE туннель:    local=172.16.2.2, remote=$HQ_WAN_IP, tunnel=10.0.0.2/30"
-echo "  Часовой пояс:   $TZ_NAME"
+echo "  Hostname:      ${HOSTNAME_FQDN}"
+echo "  WAN интерфейс: ${WAN_IFACE} = ${WAN_IP_CIDR}, шлюз ${WAN_GW}, GRE local ${GRE_LOCAL_IP}"
+echo "  WAN DNS:       ${DNS_FORWARDER1}, ${DNS_FORWARDER2}"
+echo "  LAN интерфейс: ${LAN_IFACE} = ${LAN_IP_CIDR}"
+echo "  GRE туннель:   remote=${HQ_WAN_IP}, tunnel=${GRE_TUNNEL_CIDR}, network=${GRE_NET}"
+echo "  OSPF:          router-id=${OSPF_ROUTER_ID}, password=${OSPF_PASS}"
+echo "  Часовой пояс:  ${TZ_NAME}"
+echo "  DNS-домен:     ${DOMAIN}"
 echo
 read -rp "Продолжить? [y/N]: " CONFIRM
 if [[ ! "${CONFIRM,,}" =~ ^y ]]; then
@@ -60,9 +105,9 @@ fi
 declare -A STATUS
 
 # ─── 1. Hostname ────────────────────────────────────────────────────────────
-info "Устанавливаю hostname: br-rtr.au-team.irpo"
-hostnamectl set-hostname br-rtr.au-team.irpo
-ok "Hostname: br-rtr.au-team.irpo"
+info "Устанавливаю hostname: ${HOSTNAME_FQDN}"
+hostnamectl set-hostname "$HOSTNAME_FQDN"
+ok "Hostname: ${HOSTNAME_FQDN}"
 STATUS["hostname"]="OK"
 
 # ─── 2. Часовой пояс ────────────────────────────────────────────────────────
@@ -88,42 +133,42 @@ ok "IP forwarding включён"
 STATUS["ip_forward"]="OK"
 
 # ─── 4. IP-адресация WAN (задание 1) ────────────────────────────────────────
-info "[Задание 1] Настройка WAN ($WAN_IFACE): 172.16.2.2/28, шлюз 172.16.2.1"
+info "[Задание 1] Настройка WAN ($WAN_IFACE): $WAN_IP_CIDR, шлюз $WAN_GW"
 
 if command -v nmcli &>/dev/null; then
     nmcli con delete "wan-${WAN_IFACE}" &>/dev/null || true
     nmcli con add type ethernet ifname "$WAN_IFACE" con-name "wan-${WAN_IFACE}" \
         ipv4.method manual \
-        ipv4.addresses "172.16.2.2/28" \
-        ipv4.gateway "172.16.2.1" \
-        ipv4.dns "77.88.8.7 77.88.8.3" \
+        ipv4.addresses "$WAN_IP_CIDR" \
+        ipv4.gateway "$WAN_GW" \
+        ipv4.dns "${DNS_FORWARDER1} ${DNS_FORWARDER2}" \
         connection.autoconnect yes
     nmcli con up "wan-${WAN_IFACE}"
 else
     ip addr flush dev "$WAN_IFACE" 2>/dev/null || true
-    ip addr add 172.16.2.2/28 dev "$WAN_IFACE"
+    ip addr add "$WAN_IP_CIDR" dev "$WAN_IFACE"
     ip link set "$WAN_IFACE" up
-    ip route replace default via 172.16.2.1 dev "$WAN_IFACE"
+    ip route replace default via "$WAN_GW" dev "$WAN_IFACE"
 fi
-ok "WAN ($WAN_IFACE): 172.16.2.2/28, шлюз 172.16.2.1"
+ok "WAN ($WAN_IFACE): $WAN_IP_CIDR, шлюз $WAN_GW"
 STATUS["ip_wan"]="OK"
 
-# ─── 5. IP-адресация LAN (задание 1) — прямо на ens19 ──────────────────────
-info "[Задание 1] Настройка LAN ($LAN_IFACE): 192.168.3.1/28"
+# ─── 5. IP-адресация LAN (задание 1) — прямо на интерфейсе ──────────────────
+info "[Задание 1] Настройка LAN ($LAN_IFACE): $LAN_IP_CIDR"
 
 if command -v nmcli &>/dev/null; then
     nmcli con delete "lan-${LAN_IFACE}" &>/dev/null || true
     nmcli con add type ethernet ifname "$LAN_IFACE" con-name "lan-${LAN_IFACE}" \
         ipv4.method manual \
-        ipv4.addresses "192.168.3.1/28" \
+        ipv4.addresses "$LAN_IP_CIDR" \
         connection.autoconnect yes
     nmcli con up "lan-${LAN_IFACE}"
 else
     ip addr flush dev "$LAN_IFACE" 2>/dev/null || true
-    ip addr add 192.168.3.1/28 dev "$LAN_IFACE"
+    ip addr add "$LAN_IP_CIDR" dev "$LAN_IFACE"
     ip link set "$LAN_IFACE" up
 fi
-ok "LAN ($LAN_IFACE): 192.168.3.1/28"
+ok "LAN ($LAN_IFACE): $LAN_IP_CIDR"
 STATUS["ip_lan"]="OK"
 
 # ─── 6. NAT через iptables (задание 8) ──────────────────────────────────────
@@ -154,7 +199,7 @@ if command -v iptables &>/dev/null; then
     # Автозагрузка через rc.local
     RC_LOCAL="/etc/rc.local"
     if [[ ! -f "$RC_LOCAL" ]] || ! grep -q "iptables-restore" "$RC_LOCAL"; then
-        cat > "$RC_LOCAL" <<'EOF'
+        cat > "$RC_LOCAL" <<'EOF2'
 #!/bin/bash
 # Восстановление правил iptables при старте
 if [[ -f /etc/iptables/rules.v4 ]]; then
@@ -162,7 +207,7 @@ if [[ -f /etc/iptables/rules.v4 ]]; then
 fi
 echo 1 > /proc/sys/net/ipv4/ip_forward
 exit 0
-EOF
+EOF2
         chmod +x "$RC_LOCAL"
         ok "Автозагрузка NAT добавлена в $RC_LOCAL"
     fi
@@ -175,24 +220,24 @@ fi
 
 # ─── 7. GRE-туннель (задание 6) ─────────────────────────────────────────────
 info "[Задание 6] Создание GRE-туннеля gre1..."
-info "  local=172.16.2.2, remote=$HQ_WAN_IP, tunnel IP=10.0.0.2/30"
+info "  local=${GRE_LOCAL_IP}, remote=${HQ_WAN_IP}, tunnel IP=${GRE_TUNNEL_CIDR}"
 
 ip tunnel del gre1 2>/dev/null || true
 if command -v nmcli &>/dev/null; then
     nmcli con delete gre1 2>/dev/null || true
     nmcli con add type ip-tunnel ifname gre1 con-name gre1 \
         tunnel.mode gre \
-        tunnel.local "172.16.2.2" \
+        tunnel.local "$GRE_LOCAL_IP" \
         tunnel.remote "$HQ_WAN_IP" \
-        ipv4.method manual ipv4.addresses "10.0.0.2/30" \
+        ipv4.method manual ipv4.addresses "$GRE_TUNNEL_CIDR" \
         connection.autoconnect yes
     nmcli con up gre1
 else
-    ip tunnel add gre1 mode gre local "172.16.2.2" remote "$HQ_WAN_IP" ttl 255
-    ip addr add 10.0.0.2/30 dev gre1
+    ip tunnel add gre1 mode gre local "$GRE_LOCAL_IP" remote "$HQ_WAN_IP" ttl 255
+    ip addr add "$GRE_TUNNEL_CIDR" dev gre1
     ip link set gre1 up
 fi
-ok "GRE туннель gre1 создан: 10.0.0.2/30"
+ok "GRE туннель gre1 создан: ${GRE_TUNNEL_CIDR}"
 STATUS["gre_tunnel"]="OK"
 
 # ─── 8. OSPF через FRR (задание 7) ──────────────────────────────────────────
@@ -217,17 +262,17 @@ if command -v vtysh &>/dev/null || [[ -f /etc/frr/daemons ]]; then
     FRR_OSPF="/etc/frr/frr.conf"
     [[ -f "$FRR_OSPF" ]] && cp "$FRR_OSPF" "${FRR_OSPF}.bak"
 
-    cat > "$FRR_OSPF" <<EOF
+    cat > "$FRR_OSPF" <<EOF2
 !
 ! FRR OSPF конфигурация BR-RTR — демоэкзамен 09.02.06 (2026)
 !
 frr version 8.1
 frr defaults traditional
-hostname br-rtr.au-team.irpo
+hostname ${HOSTNAME_FQDN}
 !
 router ospf
- ospf router-id 10.0.0.2
- network 10.0.0.0/30 area 0
+ ospf router-id ${OSPF_ROUTER_ID}
+ network ${GRE_NET} area 0
  area 0 authentication message-digest
  passive-interface default
  no passive-interface gre1
@@ -238,9 +283,9 @@ interface gre1
 !
 line vty
 !
-EOF
+EOF2
     systemctl enable --now frr 2>/dev/null || service frr restart 2>/dev/null || true
-    ok "OSPF (FRR) настроен, router-id=10.0.0.2"
+    ok "OSPF (FRR) настроен, router-id=${OSPF_ROUTER_ID}"
     STATUS["ospf"]="OK"
 else
     warn "FRR не найден, пропускаю настройку OSPF"
@@ -278,6 +323,7 @@ done
 echo "============================================================"
 echo
 ok "Настройка BR-RTR завершена!"
-info "WAN: $WAN_IFACE (172.16.2.2/28) | LAN: $LAN_IFACE (192.168.3.1/28)"
+info "Hostname: ${HOSTNAME_FQDN}"
+info "WAN: ${WAN_IFACE} (${WAN_IP_CIDR}, шлюз ${WAN_GW}) | LAN: ${LAN_IFACE} (${LAN_IP_CIDR})"
 info "NAT: iptables MASQUERADE через $WAN_IFACE"
-info "GRE: 10.0.0.2/30 → $HQ_WAN_IP"
+info "GRE: ${GRE_TUNNEL_CIDR} → ${HQ_WAN_IP}"
