@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-# ─── Цветной вывод ─────────────────────────────────────────────────────[...]
+# ─── Цветной вывод ─────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'
 NC='\033[0m'
 
@@ -14,7 +14,7 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
-# ─── Проверка root ──────────────────────────────────────────────────────[...]
+# ─── Проверка root ──────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
     error "Скрипт должен быть запущен от имени root (sudo или su -)"
     exit 1
@@ -88,36 +88,38 @@ else
     STATUS["timezone"]="ERROR"
 fi
 
-# ─── 3. IP-адресация (задание 1) ─────────────────────────────────────────────
+# ─── 3. IP-адресация (задание 1) — Альт Линукс /etc/net/ifaces ──────────────
 info "[Задание 1] Настройка IP на $NET_IFACE: 192.168.3.2/28, шлюз 192.168.3.1"
+INET_DIR="/etc/net/ifaces/${NET_IFACE}"
+mkdir -p "$INET_DIR"
 
-if command -v nmcli &>/dev/null; then
-    nmcli con delete "static-${NET_IFACE}" &>/dev/null || true
-    nmcli con add type ethernet ifname "$NET_IFACE" con-name "static-${NET_IFACE}" \
-        ipv4.method manual \
-        ipv4.addresses "192.168.3.2/28" \
-        ipv4.gateway "192.168.3.1" \
-        ipv4.dns "127.0.0.1" \
-        connection.autoconnect yes
-    nmcli con up "static-${NET_IFACE}"
-else
-    ip addr flush dev "$NET_IFACE" 2>/dev/null || true
-    ip addr add 192.168.3.2/28 dev "$NET_IFACE"
-    ip link set "$NET_IFACE" up
-    ip route replace default via 192.168.3.1 2>/dev/null || true
+cat > "${INET_DIR}/options" <<EOF
+NM_CONTROLLED=no
+DISABLED=no
+BOOTPROTO=static
+TYPE=eth
+CONFIG_IPV4=yes
+EOF
 
-    RESOLV="/etc/resolv.conf"
-    [[ -f "$RESOLV" ]] && cp "$RESOLV" "${RESOLV}.bak"
-    cat > "$RESOLV" <<EOF
-# /etc/resolv.conf — BR-SRV
+echo "192.168.3.2/28" > "${INET_DIR}/ipv4address"
+echo "default via 192.168.3.1" > "${INET_DIR}/ipv4route"
+
+# Применяем сразу без ребута
+ip addr flush dev "$NET_IFACE" 2>/dev/null || true
+ip addr add 192.168.3.2/28 dev "$NET_IFACE" 2>/dev/null || true
+ip link set "$NET_IFACE" up 2>/dev/null || true
+ip route replace default via 192.168.3.1 2>/dev/null || true
+
+# resolv.conf
+cat > /etc/resolv.conf <<EOF
 search au-team.irpo
 nameserver 127.0.0.1
 EOF
-fi
-ok "IP настроен: 192.168.3.2/28, шлюз 192.168.3.1"
+
+ok "IP настроен: 192.168.3.2/28, шлюз 192.168.3.1 (сохранено в /etc/net/ifaces)"
 STATUS["ip"]="OK"
 
-# ─── 4. Пользователь sshuser (задание 3) ─────────────────────��───────────────
+# ─── 4. Пользователь sshuser (задание 3) ─────────────────────────────────────
 info "[Задание 3] Создание пользователя sshuser (uid=2026)..."
 if ! id sshuser &>/dev/null; then
     useradd -u 2026 -m -s /bin/bash sshuser
@@ -146,7 +148,6 @@ STATUS["remote_user"]="OK"
 # ─── 5. Настройка SSH (задание 5) ─────────────────────────────────────────────
 info "[Задание 5] Настройка SSH: порт 2026, AllowUsers sshuser, MaxAuthTries 2, баннер..."
 
-# Определяем путь к sshd_config (Альт Линукс vs стандартный)
 if [[ -f /etc/openssh/sshd_config ]]; then
     SSHD_CONF="/etc/openssh/sshd_config"
     SSH_DIR="/etc/openssh"
@@ -217,7 +218,6 @@ fi
 # ─── 6. DNS-сервер через dnsmasq (задание 10) ────────────────────────────────
 info "[Задание 10] Настройка DNS-сервера dnsmasq..."
 
-# Останавливаем bind если был запущен
 systemctl stop bind named bind9 2>/dev/null || true
 systemctl disable bind named bind9 2>/dev/null || true
 service bind stop 2>/dev/null || true
@@ -232,11 +232,9 @@ if ! command -v dnsmasq &>/dev/null; then
 fi
 
 if command -v dnsmasq &>/dev/null; then
-    # Отключаем systemd-resolved если он занимает порт 53
     systemctl stop systemd-resolved 2>/dev/null || true
     systemctl disable systemd-resolved 2>/dev/null || true
 
-    # Сбрасываем OPTIONS в /etc/sysconfig/dnsmasq (Альт Линукс)
     if [[ -f /etc/sysconfig/dnsmasq ]]; then
         echo 'OPTIONS=""' > /etc/sysconfig/dnsmasq
     fi
@@ -250,7 +248,6 @@ no-resolv
 no-poll
 no-hosts
 
-# Форвардеры
 server=77.88.8.7
 server=77.88.8.3
 
@@ -258,7 +255,6 @@ cache-size=1000
 all-servers
 no-negcache
 
-# Прямые записи зоны au-team.irpo
 host-record=hq-rtr.au-team.irpo,${IP_HQ_RTR}
 host-record=hq-srv.au-team.irpo,${IP_HQ_SRV}
 host-record=hq-cli.au-team.irpo,${IP_HQ_CLI}
@@ -267,7 +263,6 @@ host-record=br-srv.au-team.irpo,${IP_BR_SRV}
 host-record=docker.au-team.irpo,${IP_DOCKER}
 host-record=web.au-team.irpo,${IP_WEB}
 
-# Обратные PTR-записи
 ptr-record=$(echo "$IP_BR_RTR" | awk -F. '{print $4"."$3"."$2"."$1}').in-addr.arpa,br-rtr.au-team.irpo
 ptr-record=$(echo "$IP_BR_SRV" | awk -F. '{print $4"."$3"."$2"."$1}').in-addr.arpa,br-srv.au-team.irpo
 ptr-record=$(echo "$IP_HQ_SRV" | awk -F. '{print $4"."$3"."$2"."$1}').in-addr.arpa,hq-srv.au-team.irpo
@@ -275,7 +270,6 @@ EOF
 
     ok "Конфиг /etc/dnsmasq.conf создан"
 
-    # Запуск dnsmasq
     DNS_STARTED=0
     if systemctl enable --now dnsmasq 2>/dev/null; then
         ok "dnsmasq запущен через systemctl"
@@ -287,7 +281,6 @@ EOF
     fi
 
     if [[ $DNS_STARTED -eq 1 ]]; then
-        # Проверка
         sleep 1
         if dig +short br-srv.au-team.irpo @127.0.0.1 &>/dev/null; then
             ok "DNS отвечает: br-srv.au-team.irpo → ${IP_BR_SRV}"
@@ -300,7 +293,7 @@ EOF
         STATUS["dns"]="ERROR"
     fi
 else
-    warn "dnsmasq не на��ден после установки, пропускаю DNS"
+    warn "dnsmasq не найден после установки, пропускаю DNS"
     STATUS["dns"]="SKIP"
 fi
 
@@ -322,3 +315,4 @@ echo
 ok "Настройка BR-SRV завершена!"
 info "SSH: порт 2026, пользователь sshuser, конфиг: $SSHD_CONF"
 info "DNS: dnsmasq, зона au-team.irpo, форвардеры 77.88.8.7, 77.88.8.3"
+info "IP сохранён в: /etc/net/ifaces/${NET_IFACE} (переживёт ребут)"
