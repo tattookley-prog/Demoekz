@@ -123,8 +123,10 @@ IP forwarding, NAT через nftables (masquerade для HQ-RTR и BR-RTR).
 ```bash
 sudo bash scripts/hq_rtr_setup.sh
 ```
-**Что делает:** hostname, IP (nmcli), VLAN 100/200/999 (nmcli), GRE-туннель `gre1`,
-OSPF через FRR, NAT через nftables, DHCP-сервер для HQ-CLI, пользователь `net_admin`.
+**Что делает:** hostname, IP через etcnet, VLAN 100/200, GRE-туннель `gre1`,
+OSPF через FRR, NAT через iptables (MASQUERADE), правила FORWARD и MSS clamp
+(задание №8 — доступ в Интернет для всех устройств офиса), DHCP для HQ-CLI,
+автозагрузка iptables через systemd (`iptables-restore.service`), пользователь `net_admin`.
 
 #### `scripts/br_rtr_setup.sh` — настройка BR-RTR
 ```bash

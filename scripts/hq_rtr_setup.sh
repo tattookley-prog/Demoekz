@@ -233,23 +233,50 @@ if command -v iptables &>/dev/null; then
     iptables -t nat -A POSTROUTING -o "$WAN_IFACE" -j MASQUERADE
     ok "NAT: MASQUERADE добавлен (out: $WAN_IFACE)"
 
+    # Разрешаем форвардинг из локальных VLAN наружу и обратный трафик established/related
+    iptables -F FORWARD 2>/dev/null || true
+    iptables -P FORWARD ACCEPT
+
+    iptables -A FORWARD -i "${TRUNK_IFACE}.100" -o "$WAN_IFACE" -j ACCEPT
+    iptables -A FORWARD -i "${TRUNK_IFACE}.200" -o "$WAN_IFACE" -j ACCEPT
+    iptables -A FORWARD -i "$WAN_IFACE" -o "${TRUNK_IFACE}.100" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    iptables -A FORWARD -i "$WAN_IFACE" -o "${TRUNK_IFACE}.200" -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+    # Форвардинг через GRE (для задания 7 — связность офисов)
+    iptables -A FORWARD -i gre1 -j ACCEPT
+    iptables -A FORWARD -o gre1 -j ACCEPT
+
+    ok "FORWARD-правила добавлены (VLAN 100/200 ↔ $WAN_IFACE, gre1)"
+    STATUS["forward"]="OK"
+
+    # TCP MSS clamping — предотвращает зависание больших TCP-сессий при MTU 1400 на VLAN
+    iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    ok "MSS clamping добавлен (clamp-mss-to-pmtu)"
+    STATUS["mss_clamp"]="OK"
+
     mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4
     ok "Правила iptables сохранены: /etc/iptables/rules.v4"
 
-    RC_LOCAL="/etc/rc.local"
-    if [[ ! -f "$RC_LOCAL" ]] || ! grep -q "iptables-restore" "$RC_LOCAL"; then
-        cat > "$RC_LOCAL" <<'EOF'
-#!/bin/bash
-if [[ -f /etc/iptables/rules.v4 ]]; then
-    iptables-restore < /etc/iptables/rules.v4
-fi
-echo 1 > /proc/sys/net/ipv4/ip_forward
-exit 0
+    # Автозагрузка правил через systemd-unit (rc.local ненадёжен на systemd-Альте)
+    cat > /etc/systemd/system/iptables-restore.service <<'EOF'
+[Unit]
+Description=Restore iptables rules
+Before=network.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/iptables-restore /etc/iptables/rules.v4
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
 EOF
-        chmod +x "$RC_LOCAL"
-        ok "Автозагрузка NAT добавлена в $RC_LOCAL"
-    fi
+    systemctl daemon-reload
+    systemctl enable iptables-restore.service
+    ok "Автозагрузка iptables настроена через systemd (iptables-restore.service)"
+
     STATUS["nat"]="OK"
 else
     warn "iptables не найден, пропускаю NAT"
@@ -415,7 +442,7 @@ echo
 echo "============================================================"
 echo "  Итог настройки HQ-RTR"
 echo "============================================================"
-for key in hostname timezone ip_forward vlan100 vlan200 nat gre_tunnel ospf dhcp net_admin; do
+for key in hostname timezone ip_forward vlan100 vlan200 nat forward mss_clamp gre_tunnel ospf dhcp net_admin; do
     val="${STATUS[$key]:-SKIP}"
     case "$val" in
         OK)    echo -e "  ${GREEN}[OK]${NC}    $key" ;;
