@@ -136,7 +136,7 @@ STATUS["remote_user"]="OK"
 # ─── 5. Настройка SSH (задание 5) ─────────────────────────────────────────────
 info "[Задание 5] Настройка SSH: порт 2026, AllowUsers sshuser, MaxAuthTries 2, баннер..."
 
-# Определяем пу��ь к sshd_config (Альт Линукс vs стандартный)
+# Определяем путь к sshd_config (Альт Линукс vs стандартный)
 if [[ -f /etc/openssh/sshd_config ]]; then
     SSHD_CONF="/etc/openssh/sshd_config"
     SSH_DIR="/etc/openssh"
@@ -144,12 +144,10 @@ elif [[ -f /etc/ssh/sshd_config ]]; then
     SSHD_CONF="/etc/ssh/sshd_config"
     SSH_DIR="/etc/ssh"
 else
-    # Не найден — пробуем установить
     info "openssh-server не найден, устанавливаю..."
     apt-get install -y openssh-server 2>/dev/null || \
     apt-get install -y openssh 2>/dev/null || \
     yum install -y openssh-server 2>/dev/null || true
-    # Повторно определяем путь
     if [[ -f /etc/openssh/sshd_config ]]; then
         SSHD_CONF="/etc/openssh/sshd_config"
         SSH_DIR="/etc/openssh"
@@ -168,13 +166,10 @@ if [[ -z "$SSHD_CONF" ]]; then
 else
     info "Используем конфиг: $SSHD_CONF"
     cp "$SSHD_CONF" "${SSHD_CONF}.bak"
-    info "Резервная копия: ${SSHD_CONF}.bak"
 
-    # Создаём баннер в том же каталоге
     echo "Authorized access only" > "${SSH_DIR}/banner"
     ok "Баннер создан: ${SSH_DIR}/banner"
 
-    # Функция установки/замены параметра sshd_config
     set_sshd_param() {
         local param="$1" value="$2"
         if grep -qE "^#?\s*${param}\s" "$SSHD_CONF"; then
@@ -190,19 +185,29 @@ else
     set_sshd_param "PermitRootLogin" "no"
     set_sshd_param "Banner"          "${SSH_DIR}/banner"
 
-    # Проверяем конфиг
     if sshd -t 2>/dev/null; then
         ok "Конфиг SSH валиден"
     else
         warn "Конфиг SSH содержит ошибки, проверьте вручную"
     fi
 
-    # Перезапуск sshd
-    if systemctl enable sshd 2>/dev/null && systemctl restart sshd 2>/dev/null; then
-        ok "sshd перезапущен (порт 2026)"
-        STATUS["ssh"]="OK"
-    elif systemctl enable ssh 2>/dev/null && systemctl restart ssh 2>/dev/null; then
-        ok "ssh перезапущен (порт 2026)"
+    SSH_STARTED=0
+    for svc in sshd ssh; do
+        if systemctl enable "$svc" 2>/dev/null && systemctl restart "$svc" 2>/dev/null; then
+            ok "$svc перезапущен (порт 2026)"
+            SSH_STARTED=1
+            break
+        fi
+    done
+    if [[ $SSH_STARTED -eq 0 ]]; then
+        # Fallback: SysV init (Альт Линукс)
+        if service sshd restart 2>/dev/null; then
+            chkconfig sshd on 2>/dev/null || true
+            ok "sshd перезапущен через service (порт 2026)"
+            SSH_STARTED=1
+        fi
+    fi
+    if [[ $SSH_STARTED -eq 1 ]]; then
         STATUS["ssh"]="OK"
     else
         error "Ошибка перезапуска sshd"
@@ -211,14 +216,14 @@ else
 fi
 
 # ─── 6. DNS-сервер (задание 10) ──────────────────────────────────────────────
-info "[Задание 10] Настройка DNS-сервера bind/named..."
+info "[Задание 10] Настройка DNS-сервера bind..."
 
 if ! command -v named &>/dev/null; then
     info "Установка bind..."
     apt-get install -y bind 2>/dev/null || \
     apt-get install -y bind9 2>/dev/null || \
     yum install -y bind 2>/dev/null || {
-        error "Не удалось установить bind/bind9"
+        error "Не удалось установить bind"
         STATUS["dns"]="ERROR"
     }
 fi
@@ -228,13 +233,13 @@ if command -v named &>/dev/null; then
         NAMED_CONF="/etc/named.conf"
         ZONE_DIR="/var/named"
         NAMED_USER="named"
-        info "Обнаружена Альт/RHEL-система, пути: $NAMED_CONF, $ZONE_DIR"
+        info "Альт/RHEL-система: $NAMED_CONF, $ZONE_DIR"
     else
         NAMED_CONF="/etc/bind/named.conf.local"
         ZONE_DIR="/var/lib/bind"
         NAMED_USER="bind"
         mkdir -p "$ZONE_DIR"
-        info "Обнаружена Debian-система, пути: $NAMED_CONF, $ZONE_DIR"
+        info "Debian-система: $NAMED_CONF, $ZONE_DIR"
     fi
 
     mkdir -p "$ZONE_DIR"
@@ -364,14 +369,33 @@ EOF
         warn "named-checkconf выявил ошибки, проверьте вручную"
     fi
 
+    # Запуск: пробуем systemctl, затем SysV service (Альт Линукс)
+    DNS_STARTED=0
     for svc in named bind9; do
         if systemctl enable --now "$svc" 2>/dev/null; then
-            ok "DNS-сервер ($svc) запущен и включён"
-            STATUS["dns"]="OK"
+            ok "DNS-сервер ($svc) запущен через systemctl"
+            DNS_STARTED=1
             break
         fi
     done
-    STATUS["dns"]="${STATUS[dns]:-ERROR}"
+    if [[ $DNS_STARTED -eq 0 ]]; then
+        # Fallback: SysV init — Альт Линукс использует service bind
+        if service bind start 2>/dev/null; then
+            chkconfig bind on 2>/dev/null || true
+            ok "DNS-сервер (bind) запущен через service"
+            DNS_STARTED=1
+        elif service named start 2>/dev/null; then
+            chkconfig named on 2>/dev/null || true
+            ok "DNS-сервер (named) запущен через service"
+            DNS_STARTED=1
+        fi
+    fi
+    if [[ $DNS_STARTED -eq 1 ]]; then
+        STATUS["dns"]="OK"
+    else
+        error "Не удалось запустить DNS-сервер"
+        STATUS["dns"]="ERROR"
+    fi
 else
     warn "bind/named не найден после установки, пропускаю DNS"
     STATUS["dns"]="SKIP"
