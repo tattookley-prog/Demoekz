@@ -71,7 +71,8 @@ IP_HQ_RTR="${IP_HQ_RTR:-192.168.1.1}"
 read -rp "IP BR-RTR [192.168.3.1]: " IP_BR_RTR
 IP_BR_RTR="${IP_BR_RTR:-192.168.3.1}"
 
-read -rp "IP HQ-SRV [192.168.1.2]: " IP_HQ_SRV
+IP_HQ_SRV_DEFAULT="${SRV_IP_CIDR%/*}"
+read -rp "IP HQ-SRV [${IP_HQ_SRV_DEFAULT}]: " IP_HQ_SRV
 IP_HQ_SRV="${IP_HQ_SRV:-${SRV_IP_CIDR%/*}}"
 
 read -rp "IP HQ-CLI [192.168.2.2]: " IP_HQ_CLI

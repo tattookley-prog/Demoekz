@@ -77,7 +77,8 @@ IP_HQ_SRV="${IP_HQ_SRV:-192.168.1.2}"
 read -rp "IP HQ-CLI [192.168.2.2]: " IP_HQ_CLI
 IP_HQ_CLI="${IP_HQ_CLI:-192.168.2.2}"
 
-read -rp "IP BR-SRV [192.168.3.2]: " IP_BR_SRV
+IP_BR_SRV_DEFAULT="${SRV_IP_CIDR%/*}"
+read -rp "IP BR-SRV [${IP_BR_SRV_DEFAULT}]: " IP_BR_SRV
 IP_BR_SRV="${IP_BR_SRV:-${SRV_IP_CIDR%/*}}"
 
 read -rp "IP ISP→HQ (docker) [172.16.1.1]: " IP_DOCKER

@@ -55,7 +55,8 @@ WAN_IP_CIDR="${WAN_IP_CIDR:-172.16.1.2/28}"
 read -rp "Шлюз WAN [172.16.1.1]: " WAN_GW
 WAN_GW="${WAN_GW:-172.16.1.1}"
 
-read -rp "IP WAN без маски (для GRE local) [172.16.1.2]: " WAN_IP
+WAN_IP_DEFAULT="${WAN_IP_CIDR%/*}"
+read -rp "IP WAN без маски (для GRE local) [${WAN_IP_DEFAULT}]: " WAN_IP
 WAN_IP="${WAN_IP:-${WAN_IP_CIDR%/*}}"
 
 read -rp "Внешний IP BR-RTR (WAN, для GRE) [172.16.2.2]: " BR_WAN_IP
@@ -83,7 +84,8 @@ VLAN200_ID="${VLAN200_ID:-200}"
 read -rp "IP/маска VLAN ${VLAN200_ID} [192.168.2.1/27]: " VLAN200_IP_CIDR
 VLAN200_IP_CIDR="${VLAN200_IP_CIDR:-192.168.2.1/27}"
 
-read -rp "IP VLAN ${VLAN200_ID} без маски (option routers) [192.168.2.1]: " VLAN200_IP
+VLAN200_IP_DEFAULT="${VLAN200_IP_CIDR%/*}"
+read -rp "IP VLAN ${VLAN200_ID} без маски (option routers) [${VLAN200_IP_DEFAULT}]: " VLAN200_IP
 VLAN200_IP="${VLAN200_IP:-${VLAN200_IP_CIDR%/*}}"
 
 read -rp "Сеть VLAN ${VLAN200_ID} для OSPF [192.168.2.0/27]: " VLAN200_NET
@@ -91,7 +93,8 @@ VLAN200_NET="${VLAN200_NET:-192.168.2.0/27}"
 
 echo
 echo "--- GRE / OSPF ---"
-read -rp "GRE local IP [172.16.1.2]: " GRE_LOCAL_IP
+GRE_LOCAL_DEFAULT="${WAN_IP}"
+read -rp "GRE local IP [${GRE_LOCAL_DEFAULT}]: " GRE_LOCAL_IP
 GRE_LOCAL_IP="${GRE_LOCAL_IP:-$WAN_IP}"
 
 read -rp "IP/маска GRE-туннеля [10.0.0.1/30]: " GRE_TUNNEL_CIDR
@@ -124,12 +127,11 @@ DHCP_RANGE_START="${DHCP_RANGE_START:-192.168.2.2}"
 read -rp "Конец DHCP-пула [192.168.2.30]: " DHCP_RANGE_END
 DHCP_RANGE_END="${DHCP_RANGE_END:-192.168.2.30}"
 
+echo
+info "Параметры конфигурации:"
 VLAN100="${TRUNK_IFACE}.${VLAN100_ID}"
 VLAN200="${TRUNK_IFACE}.${VLAN200_ID}"
 HOSTNAME_FQDN="hq-rtr.${DOMAIN}"
-
-echo
-info "Параметры конфигурации:"
 echo "  Hostname:      ${HOSTNAME_FQDN}"
 echo "  WAN:           ${WAN_IFACE} = ${WAN_IP_CIDR}, шлюз ${WAN_GW}, GRE local ${GRE_LOCAL_IP}"
 echo "  Trunk:         ${TRUNK_IFACE}"

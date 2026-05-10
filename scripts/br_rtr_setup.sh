@@ -48,7 +48,8 @@ WAN_IP_CIDR="${WAN_IP_CIDR:-172.16.2.2/28}"
 read -rp "Шлюз WAN [172.16.2.1]: " WAN_GW
 WAN_GW="${WAN_GW:-172.16.2.1}"
 
-read -rp "IP WAN без маски (для GRE local) [172.16.2.2]: " WAN_IP
+WAN_IP_DEFAULT="${WAN_IP_CIDR%/*}"
+read -rp "IP WAN без маски (для GRE local) [${WAN_IP_DEFAULT}]: " WAN_IP
 WAN_IP="${WAN_IP:-${WAN_IP_CIDR%/*}}"
 
 read -rp "Внешний IP HQ-RTR (WAN, для GRE) [172.16.1.2]: " HQ_WAN_IP
@@ -67,7 +68,8 @@ LAN_IP_CIDR="${LAN_IP_CIDR:-192.168.3.1/28}"
 
 echo
 echo "--- GRE / OSPF ---"
-read -rp "GRE local IP [172.16.2.2]: " GRE_LOCAL_IP
+GRE_LOCAL_DEFAULT="${WAN_IP}"
+read -rp "GRE local IP [${GRE_LOCAL_DEFAULT}]: " GRE_LOCAL_IP
 GRE_LOCAL_IP="${GRE_LOCAL_IP:-$WAN_IP}"
 
 read -rp "IP/маска GRE-туннеля [10.0.0.2/30]: " GRE_TUNNEL_CIDR
