@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-# ─── Цветной вывод ────────────────────────────────────────────────────────────
+# ─── Цветной вывод ─────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'
 NC='\033[0m'
 
@@ -14,7 +14,7 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
-# ─── Проверка root ────────────────────────────────────────────────────────────
+# ─── Проверка root ──────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
     error "Скрипт должен быть запущен от имени root (sudo или su -)"
     exit 1
@@ -27,9 +27,9 @@ echo "  Задания: 1, 3, 5"
 echo "============================================================"
 echo
 
-# ─── Интерактивный ввод параметров ───────────────────────────────────────────
-read -rp "Имя сетевого интерфейса [eth0]: " NET_IFACE
-NET_IFACE="${NET_IFACE:-eth0}"
+# ─── Интерактивный ввод параметров ─────────────────────────────────────────
+read -rp "Имя сетевого интерфейса [ens18]: " NET_IFACE
+NET_IFACE="${NET_IFACE:-ens18}"
 
 read -rp "Часовой пояс [Europe/Moscow]: " TZ_NAME
 TZ_NAME="${TZ_NAME:-Europe/Moscow}"
@@ -47,7 +47,7 @@ fi
 
 declare -A STATUS
 
-# ─── 1. Hostname ──────────────────────────────────────────────────────────────
+# ─── 1. Hostname ─────────────────────────────────────────────────────────────
 info "Устанавливаю hostname: br-srv.au-team.irpo"
 hostnamectl set-hostname br-srv.au-team.irpo
 echo "br-srv.au-team.irpo" > /etc/hostname
@@ -56,25 +56,32 @@ STATUS["hostname"]="OK"
 
 # ─── 2. Часовой пояс ─────────────────────────────────────────────────────────
 info "Часовой пояс: $TZ_NAME"
+TZ_SET=0
+# Пробуем timedatectl
 if timedatectl set-timezone "$TZ_NAME" 2>/dev/null; then
-    ok "Часовой пояс установлен: $TZ_NAME"
-    STATUS["timezone"]="OK"
-elif [[ -f "/usr/share/zoneinfo/${TZ_NAME}" ]]; then
-    cp "/usr/share/zoneinfo/${TZ_NAME}" /etc/localtime
-    echo "$TZ_NAME" > /etc/timezone 2>/dev/null || true
-    ok "Часовой пояс установлен вручную: $TZ_NAME"
+    ok "Часовой пояс установлен через timedatectl: $TZ_NAME"
+    TZ_SET=1
+fi
+# Fallback: симлинк напрямую
+if [[ $TZ_SET -eq 0 ]]; then
+    if [[ -f "/usr/share/zoneinfo/${TZ_NAME}" ]]; then
+        ln -sf "/usr/share/zoneinfo/${TZ_NAME}" /etc/localtime
+        echo "$TZ_NAME" > /etc/timezone 2>/dev/null || true
+        ok "Часовой пояс установлен через symlink: $TZ_NAME"
+        TZ_SET=1
+    fi
+fi
+if [[ $TZ_SET -eq 1 ]]; then
     STATUS["timezone"]="OK"
 else
-    error "Ошибка установки часового пояса $TZ_NAME"
+    error "Не удалось установить часовой пояс: $TZ_NAME"
     STATUS["timezone"]="ERROR"
 fi
 
 # ─── 3. IP-адресация (задание 1) ─────────────────────────────────────────────
-# BR-SRV: 192.168.3.2/28, шлюз 192.168.3.1 (BR-RTR LAN)
 info "[Задание 1] Настройка IP на $NET_IFACE: 192.168.3.2/28, шлюз 192.168.3.1"
 
 if command -v nmcli &>/dev/null; then
-    # Альт рабочая станция / JeOS — через nmcli
     nmcli con delete "static-${NET_IFACE}" &>/dev/null || true
     nmcli con add type ethernet ifname "$NET_IFACE" con-name "static-${NET_IFACE}" \
         ipv4.method manual \
@@ -84,23 +91,10 @@ if command -v nmcli &>/dev/null; then
         connection.autoconnect yes
     nmcli con up "static-${NET_IFACE}"
 else
-    # Альт сервер — через etcnet (/etc/net/ifaces/)
-    IFACE_DIR="/etc/net/ifaces/${NET_IFACE}"
-    mkdir -p "$IFACE_DIR"
-    [[ -f "${IFACE_DIR}/options" ]] && cp "${IFACE_DIR}/options" "${IFACE_DIR}/options.bak"
-    [[ -f "${IFACE_DIR}/ipv4address" ]] && cp "${IFACE_DIR}/ipv4address" "${IFACE_DIR}/ipv4address.bak"
-    [[ -f "${IFACE_DIR}/ipv4route" ]] && cp "${IFACE_DIR}/ipv4route" "${IFACE_DIR}/ipv4route.bak"
-
-    cat > "${IFACE_DIR}/options" <<EOF
-BOOTPROTO=static
-TYPE=eth
-ONBOOT=yes
-DISABLED=no
-NM_CONTROLLED=no
-CONFIG_IPV4=yes
-EOF
-    echo "192.168.3.2/28" > "${IFACE_DIR}/ipv4address"
-    echo "default via 192.168.3.1" > "${IFACE_DIR}/ipv4route"
+    ip addr flush dev "$NET_IFACE" 2>/dev/null || true
+    ip addr add 192.168.3.2/28 dev "$NET_IFACE"
+    ip link set "$NET_IFACE" up
+    ip route replace default via 192.168.3.1 2>/dev/null || true
 
     # DNS — указываем HQ-SRV
     RESOLV="/etc/resolv.conf"
@@ -110,16 +104,6 @@ EOF
 search au-team.irpo
 nameserver 192.168.1.2
 EOF
-
-    # Немедленное применение
-    ip addr flush dev "$NET_IFACE" 2>/dev/null || true
-    ip addr add 192.168.3.2/28 dev "$NET_IFACE"
-    ip link set "$NET_IFACE" up
-    ip route add default via 192.168.3.1 2>/dev/null || true
-
-    # Перезапуск network
-    systemctl restart network 2>/dev/null || service network restart 2>/dev/null || \
-        warn "Перезапустите сеть вручную: systemctl restart network"
 fi
 ok "IP настроен: 192.168.3.2/28, шлюз 192.168.3.1"
 STATUS["ip"]="OK"
@@ -153,9 +137,17 @@ STATUS["remote_user"]="OK"
 # ─── 5. Настройка SSH (задание 5) ─────────────────────────────────────────────
 info "[Задание 5] Настройка SSH: порт 2026, AllowUsers sshuser, MaxAuthTries 2, баннер..."
 
+# Устанавливаем openssh-server если не установлен
 SSHD_CONF="/etc/ssh/sshd_config"
 if [[ ! -f "$SSHD_CONF" ]]; then
-    error "Файл $SSHD_CONF не найден. Установите openssh-server."
+    info "openssh-server не найден, устанавливаю..."
+    apt-get install -y openssh-server 2>/dev/null || \
+    apt-get install -y ssh 2>/dev/null || \
+    yum install -y openssh-server 2>/dev/null || true
+fi
+
+if [[ ! -f "$SSHD_CONF" ]]; then
+    error "Файл $SSHD_CONF не найден даже после установки"
     STATUS["ssh"]="ERROR"
 else
     cp "$SSHD_CONF" "${SSHD_CONF}.bak"
@@ -168,8 +160,8 @@ else
     # Функция установки/замены параметра sshd_config
     set_sshd_param() {
         local param="$1" value="$2"
-        if grep -qE "^#?[[:space:]]*${param}[[:space:]]" "$SSHD_CONF"; then
-            sed -i "s|^#*[[:space:]]*${param}[[:space:]].*|${param} ${value}|" "$SSHD_CONF"
+        if grep -qE "^#?\s*${param}\s" "$SSHD_CONF"; then
+            sed -i "s|^#*\s*${param}\s.*|${param} ${value}|" "$SSHD_CONF"
         else
             echo "${param} ${value}" >> "$SSHD_CONF"
         fi
@@ -189,8 +181,11 @@ else
     fi
 
     # Перезапуск sshd
-    if systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null; then
+    if systemctl enable sshd 2>/dev/null && systemctl restart sshd 2>/dev/null; then
         ok "sshd перезапущен (порт 2026)"
+        STATUS["ssh"]="OK"
+    elif systemctl enable ssh 2>/dev/null && systemctl restart ssh 2>/dev/null; then
+        ok "ssh перезапущен (порт 2026)"
         STATUS["ssh"]="OK"
     else
         error "Ошибка перезапуска sshd"
@@ -198,7 +193,7 @@ else
     fi
 fi
 
-# ─── Итоговый статус ──────────────────────────────────────────────────────────
+# ─── Итоговый статус ────────────────────────────────────────────────────────
 echo
 echo "============================================================"
 echo "  Итог настройки BR-SRV"
