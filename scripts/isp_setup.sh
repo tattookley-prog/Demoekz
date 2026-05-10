@@ -44,7 +44,7 @@ echo "  Настройка ISP (Альт сервер) — демоэкзаме�
 echo "============================================================"
 echo
 
-# ─── Интерактивный ввод параметров ───────────────────────────────────────────
+echo "--- Общие параметры ---"
 read -rp "Имя WAN-интерфейса (внешняя сеть, DHCP от провайдера) [eth0]: " WAN_IFACE
 WAN_IFACE="${WAN_IFACE:-eth0}"
 
@@ -54,22 +54,39 @@ HQ_IFACE="${HQ_IFACE:-eth1}"
 read -rp "Имя интерфейса в сторону BR-RTR [eth2]: " BR_IFACE
 BR_IFACE="${BR_IFACE:-eth2}"
 
+read -rp "Часовой пояс [Europe/Moscow]: " TZ_NAME
+TZ_NAME="${TZ_NAME:-Europe/Moscow}"
+
+read -rp "DNS-домен [au-team.irpo]: " DOMAIN
+DOMAIN="${DOMAIN:-au-team.irpo}"
+
+echo
+echo "--- Интерфейсы ISP ---"
 read -rp "IP-адрес интерфейса в сторону HQ-RTR [172.16.1.1/28]: " HQ_IP
 HQ_IP="${HQ_IP:-172.16.1.1/28}"
 
 read -rp "IP-адрес интерфейса в сторону BR-RTR [172.16.2.1/28]: " BR_IP
 BR_IP="${BR_IP:-172.16.2.1/28}"
 
-read -rp "Часовой пояс [Europe/Moscow]: " TZ_NAME
-TZ_NAME="${TZ_NAME:-Europe/Moscow}"
+echo
+echo "--- NAT ---"
+read -rp "Сеть для NAT со стороны HQ-RTR [172.16.1.0/28]: " HQ_NAT_NET
+HQ_NAT_NET="${HQ_NAT_NET:-172.16.1.0/28}"
+
+read -rp "Сеть для NAT со стороны BR-RTR [172.16.2.0/28]: " BR_NAT_NET
+BR_NAT_NET="${BR_NAT_NET:-172.16.2.0/28}"
+
+HOSTNAME_FQDN="isp.${DOMAIN}"
 
 echo
 info "Параметры конфигурации:"
-echo "  ОС:                      Альт сервер (etcnet)"
-echo "  WAN интерфейс:           $WAN_IFACE (DHCP)"
-echo "  Интерфейс → HQ-RTR:     $HQ_IFACE ($HQ_IP)"
-echo "  Интерфейс → BR-RTR:     $BR_IFACE ($BR_IP)"
-echo "  Часовой пояс:            $TZ_NAME"
+echo "  Hostname:                  ${HOSTNAME_FQDN}"
+echo "  ОС:                        Альт сервер (etcnet)"
+echo "  WAN интерфейс:             $WAN_IFACE (DHCP)"
+echo "  Интерфейс → HQ-RTR:       $HQ_IFACE ($HQ_IP), NAT сеть $HQ_NAT_NET"
+echo "  Интерфейс → BR-RTR:       $BR_IFACE ($BR_IP), NAT сеть $BR_NAT_NET"
+echo "  Часовой пояс:              $TZ_NAME"
+echo "  DNS-домен:                 ${DOMAIN}"
 echo
 read -rp "Продолжить? [y/N]: " CONFIRM
 if [[ ! "${CONFIRM,,}" =~ ^y ]]; then
@@ -81,12 +98,10 @@ fi
 declare -A STATUS
 
 # ─── 1. Hostname ──────────────────────────────────────────────────────────────
-info "Устанавливаю hostname: isp.au-team.irpo"
-# Альт сервер: hostname хранится в /etc/hostname, hostnamectl тоже работает
-hostnamectl set-hostname isp.au-team.irpo
-# Дополнительно прописываем в /etc/hostname (на случай без systemd)
-echo "isp.au-team.irpo" > /etc/hostname
-ok "Hostname установлен: isp.au-team.irpo"
+info "Устанавливаю hostname: ${HOSTNAME_FQDN}"
+hostnamectl set-hostname "$HOSTNAME_FQDN"
+echo "$HOSTNAME_FQDN" > /etc/hostname
+ok "Hostname установлен: ${HOSTNAME_FQDN}"
 STATUS["hostname"]="OK"
 
 # ─── 2. Часовой пояс ─────────────────────────────────────────────────────────
@@ -124,7 +139,7 @@ etcnet_static() {
     [[ -f "${dir}/options" ]] && cp "${dir}/options" "${dir}/options.bak"
     [[ -f "${dir}/ipv4address" ]] && cp "${dir}/ipv4address" "${dir}/ipv4address.bak"
 
-    cat > "${dir}/options" <<EOF
+    cat > "${dir}/options" <<EOF2
 # etcnet options — Альт сервер
 BOOTPROTO=static
 TYPE=eth
@@ -132,7 +147,7 @@ ONBOOT=yes
 DISABLED=no
 NM_CONTROLLED=no
 CONFIG_IPV4=yes
-EOF
+EOF2
 
     # ipv4address: адрес в формате addr/prefix
     echo "${addr}/${prefix}" > "${dir}/ipv4address"
@@ -153,7 +168,7 @@ etcnet_dhcp() {
     mkdir -p "$dir"
     [[ -f "${dir}/options" ]] && cp "${dir}/options" "${dir}/options.bak"
 
-    cat > "${dir}/options" <<EOF
+    cat > "${dir}/options" <<EOF2
 # etcnet options — Альт сервер
 BOOTPROTO=dhcp
 TYPE=eth
@@ -161,7 +176,7 @@ ONBOOT=yes
 DISABLED=no
 NM_CONTROLLED=no
 CONFIG_IPV4=yes
-EOF
+EOF2
 
     info "  etcnet: ${dir}/options создан (DHCP)"
 
@@ -232,7 +247,7 @@ mkdir -p /etc/nftables
 [[ -f /etc/nftables.conf ]] && cp /etc/nftables.conf /etc/nftables.conf.bak
 [[ -f "$NFT_CONF" ]] && cp "$NFT_CONF" "${NFT_CONF}.bak"
 
-cat > "$NFT_CONF" <<EOF
+cat > "$NFT_CONF" <<EOF2
 #!/usr/sbin/nft -f
 # nftables конфигурация ISP (Альт сервер) — демоэкзамен 09.02.06 (2026)
 # NAT: masquerade для HQ-RTR и BR-RTR в сторону WAN (Интернет)
@@ -242,10 +257,10 @@ flush ruleset
 table ip nat {
     chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
-        # Masquerade: трафик от HQ-RTR (172.16.1.x) → Интернет
-        iifname "${HQ_IFACE}" oifname "${WAN_IFACE}" masquerade
-        # Masquerade: трафик от BR-RTR (172.16.2.x) → Интернет
-        iifname "${BR_IFACE}" oifname "${WAN_IFACE}" masquerade
+        # Masquerade: трафик от HQ-RTR (${HQ_NAT_NET}) → Интернет
+        ip saddr ${HQ_NAT_NET} iifname "${HQ_IFACE}" oifname "${WAN_IFACE}" masquerade
+        # Masquerade: трафик от BR-RTR (${BR_NAT_NET}) → Интернет
+        ip saddr ${BR_NAT_NET} iifname "${BR_IFACE}" oifname "${WAN_IFACE}" masquerade
     }
 }
 
@@ -254,7 +269,7 @@ table ip filter {
         type filter hook forward priority filter; policy accept;
     }
 }
-EOF
+EOF2
 
 # На Альт сервер конфиг может читаться из /etc/nftables.conf
 cp "$NFT_CONF" /etc/nftables.conf
@@ -299,10 +314,10 @@ done
 echo "============================================================"
 echo
 ok "Настройка ISP завершена!"
-info "Hostname:  isp.au-team.irpo"
+info "Hostname:  ${HOSTNAME_FQDN}"
 info "WAN:       $WAN_IFACE (DHCP от провайдера)"
-info "→ HQ-RTR: $HQ_IFACE = $HQ_IP"
-info "→ BR-RTR: $BR_IFACE = $BR_IP"
+info "→ HQ-RTR: $HQ_IFACE = $HQ_IP, NAT $HQ_NAT_NET"
+info "→ BR-RTR: $BR_IFACE = $BR_IP, NAT $BR_NAT_NET"
 info ""
 warn "Конфиги etcnet: /etc/net/ifaces/ — применятся при перезапуске сети"
 warn "nftables правила сохранены в: $NFT_CONF"

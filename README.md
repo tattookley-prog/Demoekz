@@ -133,21 +133,34 @@ OSPF через FRR, NAT через iptables (MASQUERADE), правила FORWAR
 sudo bash scripts/br_rtr_setup.sh
 ```
 **Что делает:** hostname, IP (nmcli), GRE-туннель `gre1`, OSPF через FRR,
-NAT через nftables, пользователь `net_admin`.
+NAT через iptables, пользователь `net_admin`.
 
 #### `scripts/hq_srv_setup.sh` — настройка HQ-SRV
 ```bash
 sudo bash scripts/hq_srv_setup.sh
 ```
 **Что делает:** hostname, IP, пользователь `sshuser` (uid=2026), SSH на порту 2026,
-DNS-сервер bind/named с зонами `au-team.irpo` и обратной для `192.168.1.x`.
+DNS-сервер `dnsmasq` с зоной `au-team.irpo` и PTR-записями для локальных адресов.
 
 #### `scripts/br_srv_setup.sh` — настройка BR-SRV
 ```bash
 sudo bash scripts/br_srv_setup.sh
 ```
 **Что делает:** hostname, IP (192.168.3.2/28), пользователь `sshuser` (uid=2026),
-SSH на порту 2026 с баннером.
+SSH на порту 2026 с баннером, DNS-сервер `dnsmasq`.
+
+---
+
+### Параметры скриптов
+
+Все setup-скрипты теперь спрашивают сетевые параметры интерактивно и показывают полную сводку перед подтверждением. Если просто нажимать `Enter`, будет применена прежняя эталонная схема адресации. Основные defaults:
+
+- `scripts/hq_rtr_setup.sh`: `WAN_IFACE=ens18`, `TRUNK_IFACE=ens19`, `TZ_NAME=Europe/Moscow`, `DOMAIN=au-team.irpo`, `WAN_IP_CIDR=172.16.1.2/28`, `WAN_GW=172.16.1.1`, `WAN_IP=172.16.1.2`, `BR_WAN_IP=172.16.2.2`, `VLAN100_ID=100`, `VLAN100_IP_CIDR=192.168.1.1/27`, `VLAN100_NET=192.168.1.0/27`, `VLAN200_ID=200`, `VLAN200_IP_CIDR=192.168.2.1/27`, `VLAN200_IP=192.168.2.1`, `VLAN200_NET=192.168.2.0/27`, `MTU_VLAN=1400`, `GRE_LOCAL_IP=172.16.1.2`, `GRE_TUNNEL_CIDR=10.0.0.1/30`, `GRE_NET=10.0.0.0/30`, `OSPF_ROUTER_ID=10.0.0.1`, `OSPF_PASS=P@ssw0rd`, `HQ_SRV_IP=192.168.1.2`, `DHCP_SUBNET=192.168.2.0`, `DHCP_NETMASK=255.255.255.224`, `DHCP_RANGE_START=192.168.2.2`, `DHCP_RANGE_END=192.168.2.30`.
+- `scripts/hq_srv_setup.sh`: `NET_IFACE=ens18`, `TZ_NAME=Europe/Moscow`, `DOMAIN=au-team.irpo`, `SRV_IP_CIDR=192.168.1.2/27`, `SRV_GW=192.168.1.1`, `SSH_PORT=2026`, `SSH_USER=sshuser`, `SSH_MAX_TRIES=2`, `USER_UID=2026`, `SSH_BANNER_TEXT=Authorized access only`, `DNS_FORWARDER1=77.88.8.7`, `DNS_FORWARDER2=77.88.8.3` и IP-записи зоны (`IP_HQ_RTR`, `IP_BR_RTR`, `IP_HQ_SRV`, `IP_HQ_CLI`, `IP_BR_SRV`, `IP_DOCKER`, `IP_WEB`) со старыми значениями по умолчанию.
+- `scripts/hq_cli_setup.sh`: `NET_IFACE=eth0`, `TZ_NAME=Europe/Moscow`, `DOMAIN=au-team.irpo`, `NET_MODE=dhcp`, `STATIC_IP=192.168.2.2/27`, `STATIC_GW=192.168.2.1`, `DNS_IP=192.168.1.2`, `SSH_PORT=2026`, `SSH_USER=sshuser`, `SSH_MAX_TRIES=2`, `USER_UID=2026`, `SSH_BANNER_TEXT=Authorized access only`, `ROUTER_SSH_PORT=22`, `HQ_SRV_HOST=hq-srv.au-team.irpo`, `BR_SRV_HOST=br-srv.au-team.irpo`, `HQ_RTR_HOST=hq-rtr.au-team.irpo`, `BR_RTR_HOST=br-rtr.au-team.irpo`.
+- `scripts/br_rtr_setup.sh`: `WAN_IFACE=ens18`, `LAN_IFACE=ens19`, `TZ_NAME=Europe/Moscow`, `DOMAIN=au-team.irpo`, `WAN_IP_CIDR=172.16.2.2/28`, `WAN_GW=172.16.2.1`, `WAN_IP=172.16.2.2`, `HQ_WAN_IP=172.16.1.2`, `DNS_FORWARDER1=77.88.8.7`, `DNS_FORWARDER2=77.88.8.3`, `LAN_IP_CIDR=192.168.3.1/28`, `GRE_LOCAL_IP=172.16.2.2`, `GRE_TUNNEL_CIDR=10.0.0.2/30`, `GRE_NET=10.0.0.0/30`, `OSPF_ROUTER_ID=10.0.0.2`, `OSPF_PASS=P@ssw0rd`.
+- `scripts/br_srv_setup.sh`: `NET_IFACE=ens18`, `TZ_NAME=Europe/Moscow`, `DOMAIN=au-team.irpo`, `SRV_IP_CIDR=192.168.3.2/28`, `SRV_GW=192.168.3.1`, `SSH_PORT=2026`, `SSH_USER=sshuser`, `SSH_MAX_TRIES=2`, `USER_UID=2026`, `SSH_BANNER_TEXT=Authorized access only`, `DNS_FORWARDER1=77.88.8.7`, `DNS_FORWARDER2=77.88.8.3` и IP-записи зоны со старыми defaults.
+- `scripts/isp_setup.sh`: `WAN_IFACE=eth0`, `HQ_IFACE=eth1`, `BR_IFACE=eth2`, `TZ_NAME=Europe/Moscow`, `DOMAIN=au-team.irpo`, `HQ_IP=172.16.1.1/28`, `BR_IP=172.16.2.1/28`, `HQ_NAT_NET=172.16.1.0/28`, `BR_NAT_NET=172.16.2.0/28`.
 
 ---
 
