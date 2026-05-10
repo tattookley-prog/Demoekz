@@ -1,11 +1,11 @@
 #!/bin/bash
 # Скрипт настройки BR-SRV (Альт сервер)
-# Покрывает: задания 1, 3, 5
+# Покрывает: задания 1, 3, 5, 10
 # Демоэкзамен 09.02.06 Сетевое и системное администрирование, 2026
 
 set -euo pipefail
 
-# ─── Цветной вывод ─────────────────────────────────────────────────────────
+# ─── Цветной вывод ─────────────────────────────────────────────────────[...]
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'
 NC='\033[0m'
 
@@ -14,7 +14,7 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
-# ─── Проверка root ──────────────────────────────────────────────────────────
+# ─── Проверка root ──────────────────────────────────────────────────────[...]
 if [[ $EUID -ne 0 ]]; then
     error "Скрипт должен быть запущен от имени root (sudo или su -)"
     exit 1
@@ -23,7 +23,7 @@ fi
 echo
 echo "============================================================"
 echo "  Настройка BR-SRV (Альт сервер) — демоэкзамен 09.02.06 (2026)"
-echo "  Задания: 1, 3, 5"
+echo "  Задания: 1, 3, 5, 10"
 echo "============================================================"
 echo
 
@@ -35,9 +35,21 @@ read -rp "Часовой пояс [Europe/Moscow]: " TZ_NAME
 TZ_NAME="${TZ_NAME:-Europe/Moscow}"
 
 echo
+echo "--- DNS-записи (Задание 10) ---"
+echo "Введите IP-адреса устройств для зоны DNS au-team.irpo:"
+read -rp "IP HQ-RTR [192.168.1.1]: "   IP_HQ_RTR;  IP_HQ_RTR="${IP_HQ_RTR:-192.168.1.1}"
+read -rp "IP BR-RTR [192.168.3.1]: "   IP_BR_RTR;  IP_BR_RTR="${IP_BR_RTR:-192.168.3.1}"
+read -rp "IP HQ-SRV [192.168.1.2]: "   IP_HQ_SRV;  IP_HQ_SRV="${IP_HQ_SRV:-192.168.1.2}"
+read -rp "IP HQ-CLI [192.168.2.2]: "   IP_HQ_CLI;  IP_HQ_CLI="${IP_HQ_CLI:-192.168.2.2}"
+read -rp "IP BR-SRV [192.168.3.2]: "   IP_BR_SRV;  IP_BR_SRV="${IP_BR_SRV:-192.168.3.2}"
+read -rp "IP ISP→HQ (docker) [172.16.1.1]: " IP_DOCKER; IP_DOCKER="${IP_DOCKER:-172.16.1.1}"
+read -rp "IP ISP→BR (web)    [172.16.2.1]: " IP_WEB;    IP_WEB="${IP_WEB:-172.16.2.1}"
+
+echo
 info "Параметры конфигурации:"
 echo "  Интерфейс:    $NET_IFACE (192.168.3.2/28, шлюз 192.168.3.1)"
 echo "  Часовой пояс: $TZ_NAME"
+echo "  DNS зона:     au-team.irpo"
 echo
 read -rp "Продолжить? [y/N]: " CONFIRM
 if [[ ! "${CONFIRM,,}" =~ ^y ]]; then
@@ -47,14 +59,14 @@ fi
 
 declare -A STATUS
 
-# ─── 1. Hostname ─────────────────────────────────────────────────────────────
+# ─── 1. Hostname ─────────────────────────────────────────────────────────
 info "Устанавливаю hostname: br-srv.au-team.irpo"
 hostnamectl set-hostname br-srv.au-team.irpo
 echo "br-srv.au-team.irpo" > /etc/hostname
 ok "Hostname: br-srv.au-team.irpo"
 STATUS["hostname"]="OK"
 
-# ─── 2. Часовой пояс ─────────────────────────────────────────────────────────
+# ─── 2. Часовой пояс ────────────────────────────────────────────────────
 info "Часовой пояс: $TZ_NAME"
 TZ_SET=0
 if timedatectl set-timezone "$TZ_NAME" 2>/dev/null; then
@@ -85,7 +97,7 @@ if command -v nmcli &>/dev/null; then
         ipv4.method manual \
         ipv4.addresses "192.168.3.2/28" \
         ipv4.gateway "192.168.3.1" \
-        ipv4.dns "192.168.1.2" \
+        ipv4.dns "127.0.0.1" \
         connection.autoconnect yes
     nmcli con up "static-${NET_IFACE}"
 else
@@ -99,13 +111,13 @@ else
     cat > "$RESOLV" <<EOF
 # /etc/resolv.conf — BR-SRV
 search au-team.irpo
-nameserver 192.168.1.2
+nameserver 127.0.0.1
 EOF
 fi
 ok "IP настроен: 192.168.3.2/28, шлюз 192.168.3.1"
 STATUS["ip"]="OK"
 
-# ─── 4. Пользователь sshuser (задание 3) ─────────────────────────────────────
+# ─── 4. Пользователь sshuser (задание 3) ─────────────────────��───────────────
 info "[Задание 3] Создание пользователя sshuser (uid=2026)..."
 if ! id sshuser &>/dev/null; then
     useradd -u 2026 -m -s /bin/bash sshuser
@@ -202,12 +214,102 @@ else
     fi
 fi
 
-# ─── Итоговый статус ────────────────────────────────────────────────────────
+# ─── 6. DNS-сервер через dnsmasq (задание 10) ────────────────────────────────
+info "[Задание 10] Настройка DNS-сервера dnsmasq..."
+
+# Останавливаем bind если был запущен
+systemctl stop bind named bind9 2>/dev/null || true
+systemctl disable bind named bind9 2>/dev/null || true
+service bind stop 2>/dev/null || true
+
+if ! command -v dnsmasq &>/dev/null; then
+    info "Установка dnsmasq..."
+    apt-get install -y dnsmasq 2>/dev/null || \
+    yum install -y dnsmasq 2>/dev/null || {
+        error "Не удалось установить dnsmasq"
+        STATUS["dns"]="ERROR"
+    }
+fi
+
+if command -v dnsmasq &>/dev/null; then
+    # Отключаем systemd-resolved если он занимает порт 53
+    systemctl stop systemd-resolved 2>/dev/null || true
+    systemctl disable systemd-resolved 2>/dev/null || true
+
+    # Сбрасываем OPTIONS в /etc/sysconfig/dnsmasq (Альт Линукс)
+    if [[ -f /etc/sysconfig/dnsmasq ]]; then
+        echo 'OPTIONS=""' > /etc/sysconfig/dnsmasq
+    fi
+
+    info "Генерирую /etc/dnsmasq.conf"
+    cat > /etc/dnsmasq.conf <<EOF
+# dnsmasq конфиг — BR-SRV DNS-сервер
+# Демоэкзамен 09.02.06 (2026)
+
+no-resolv
+no-poll
+no-hosts
+
+# Форвардеры
+server=77.88.8.7
+server=77.88.8.3
+
+cache-size=1000
+all-servers
+no-negcache
+
+# Прямые записи зоны au-team.irpo
+host-record=hq-rtr.au-team.irpo,${IP_HQ_RTR}
+host-record=hq-srv.au-team.irpo,${IP_HQ_SRV}
+host-record=hq-cli.au-team.irpo,${IP_HQ_CLI}
+host-record=br-rtr.au-team.irpo,${IP_BR_RTR}
+host-record=br-srv.au-team.irpo,${IP_BR_SRV}
+host-record=docker.au-team.irpo,${IP_DOCKER}
+host-record=web.au-team.irpo,${IP_WEB}
+
+# Обратные PTR-записи
+ptr-record=$(echo "$IP_BR_RTR" | awk -F. '{print $4"."$3"."$2"."$1}').in-addr.arpa,br-rtr.au-team.irpo
+ptr-record=$(echo "$IP_BR_SRV" | awk -F. '{print $4"."$3"."$2"."$1}').in-addr.arpa,br-srv.au-team.irpo
+ptr-record=$(echo "$IP_HQ_SRV" | awk -F. '{print $4"."$3"."$2"."$1}').in-addr.arpa,hq-srv.au-team.irpo
+EOF
+
+    ok "Конфиг /etc/dnsmasq.conf создан"
+
+    # Запуск dnsmasq
+    DNS_STARTED=0
+    if systemctl enable --now dnsmasq 2>/dev/null; then
+        ok "dnsmasq запущен через systemctl"
+        DNS_STARTED=1
+    elif service dnsmasq start 2>/dev/null; then
+        chkconfig dnsmasq on 2>/dev/null || true
+        ok "dnsmasq запущен через service"
+        DNS_STARTED=1
+    fi
+
+    if [[ $DNS_STARTED -eq 1 ]]; then
+        # Проверка
+        sleep 1
+        if dig +short br-srv.au-team.irpo @127.0.0.1 &>/dev/null; then
+            ok "DNS отвечает: br-srv.au-team.irpo → ${IP_BR_SRV}"
+        else
+            warn "dnsmasq запущен, но dig не отвечает — проверьте вручную"
+        fi
+        STATUS["dns"]="OK"
+    else
+        error "Не удалось запустить dnsmasq"
+        STATUS["dns"]="ERROR"
+    fi
+else
+    warn "dnsmasq не на��ден после установки, пропускаю DNS"
+    STATUS["dns"]="SKIP"
+fi
+
+# ─── Итоговый статус ───────────────────────────────────────────────────
 echo
 echo "============================================================"
 echo "  Итог настройки BR-SRV"
 echo "============================================================"
-for key in hostname timezone ip sshuser remote_user ssh; do
+for key in hostname timezone ip sshuser remote_user ssh dns; do
     val="${STATUS[$key]:-SKIP}"
     case "$val" in
         OK)    echo -e "  ${GREEN}[OK]${NC}    $key" ;;
@@ -219,4 +321,4 @@ echo "============================================================"
 echo
 ok "Настройка BR-SRV завершена!"
 info "SSH: порт 2026, пользователь sshuser, конфиг: $SSHD_CONF"
-info "IP: 192.168.3.2/28, шлюз 192.168.3.1"
+info "DNS: dnsmasq, зона au-team.irpo, форвардеры 77.88.8.7, 77.88.8.3"
