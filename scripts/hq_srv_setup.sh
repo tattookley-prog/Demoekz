@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-# ─── Цветной вывод ─────────────────────────────────────────────────────────
+# ─── Цветной вывод ─────────────────────────────────────────────────────[...]
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'
 NC='\033[0m'
 
@@ -14,7 +14,7 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
-# ─── Проверка root ──────────────────────────────────────────────────────────
+# ─── Проверка root ──────────────────────────────────────────────────────[...]
 if [[ $EUID -ne 0 ]]; then
     error "Скрипт должен быть запущен от имени root (sudo или su -)"
     exit 1
@@ -59,13 +59,13 @@ fi
 
 declare -A STATUS
 
-# ─── 1. Hostname ─────────────────────────────────────────────────────────────
+# ─── 1. Hostname ─────────────────────────────────────────────────────────
 info "Устанавливаю hostname: hq-srv.au-team.irpo"
 hostnamectl set-hostname hq-srv.au-team.irpo
 ok "Hostname: hq-srv.au-team.irpo"
 STATUS["hostname"]="OK"
 
-# ─── 2. Часовой пояс ─────────────────────────────────────────────────────────
+# ─── 2. Часовой пояс ────────────────────────────────────────────────────
 info "Часовой пояс: $TZ_NAME"
 TZ_SET=0
 if timedatectl set-timezone "$TZ_NAME" 2>/dev/null; then
@@ -168,7 +168,7 @@ else
     cp "$SSHD_CONF" "${SSHD_CONF}.bak"
 
     echo "Authorized access only" > "${SSH_DIR}/banner"
-    ok "Баннер создан: ${SSH_DIR}/banner"
+    ok "Баннер созда��: ${SSH_DIR}/banner"
 
     set_sshd_param() {
         local param="$1" value="$2"
@@ -215,193 +215,97 @@ else
     fi
 fi
 
-# ─── 6. DNS-сервер (задание 10) ──────────────────────────────────────────────
-info "[Задание 10] Настройка DNS-сервера bind..."
+# ─── 6. DNS-сервер через dnsmasq (задание 10) ────────────────────────────────
+info "[Задание 10] Настройка DNS-сервера dnsmasq..."
 
-if ! command -v named &>/dev/null; then
-    info "Установка bind..."
-    apt-get install -y bind 2>/dev/null || \
-    apt-get install -y bind9 2>/dev/null || \
-    yum install -y bind 2>/dev/null || {
-        error "Не удалось установить bind"
+# Останавливаем bind если был запущен
+systemctl stop bind named bind9 2>/dev/null || true
+systemctl disable bind named bind9 2>/dev/null || true
+service bind stop 2>/dev/null || true
+
+if ! command -v dnsmasq &>/dev/null; then
+    info "Установка dnsmasq..."
+    apt-get install -y dnsmasq 2>/dev/null || \
+    yum install -y dnsmasq 2>/dev/null || {
+        error "Не удалось установить dnsmasq"
         STATUS["dns"]="ERROR"
     }
 fi
 
-if command -v named &>/dev/null; then
-    if [[ -d /var/named ]] || [[ -f /etc/named.conf ]]; then
-        NAMED_CONF="/etc/named.conf"
-        ZONE_DIR="/var/named"
-        NAMED_USER="named"
-        info "Альт/RHEL-система: $NAMED_CONF, $ZONE_DIR"
-    else
-        NAMED_CONF="/etc/bind/named.conf.local"
-        ZONE_DIR="/var/lib/bind"
-        NAMED_USER="bind"
-        mkdir -p "$ZONE_DIR"
-        info "Debian-система: $NAMED_CONF, $ZONE_DIR"
+if command -v dnsmasq &>/dev/null; then
+    # Отключаем systemd-resolved если он занимает порт 53
+    systemctl stop systemd-resolved 2>/dev/null || true
+    systemctl disable systemd-resolved 2>/dev/null || true
+
+    # Сбрасываем OPTIONS в /etc/sysconfig/dnsmasq (Альт Линукс)
+    if [[ -f /etc/sysconfig/dnsmasq ]]; then
+        echo 'OPTIONS=""' > /etc/sysconfig/dnsmasq
     fi
 
-    mkdir -p "$ZONE_DIR"
-    [[ -f "$NAMED_CONF" ]] && cp "$NAMED_CONF" "${NAMED_CONF}.bak"
+    info "Генерирую /etc/dnsmasq.conf"
+    cat > /etc/dnsmasq.conf <<EOF
+# dnsmasq конфиг — HQ-SRV DNS-сервер
+# Демоэкзамен 09.02.06 (2026)
 
-    IFS='.' read -ra HQ_SRV_OCTETS <<< "$IP_HQ_SRV"
-    IFS='.' read -ra HQ_RTR_OCTETS <<< "$IP_HQ_RTR"
+no-resolv
+no-poll
+no-hosts
 
-    if [[ "$NAMED_CONF" == "/etc/named.conf" ]]; then
-        cat > "$NAMED_CONF" <<EOF
-// named.conf — HQ-SRV DNS-сервер
-// Демоэкзамен 09.02.06 (2026)
+# Форвардеры
+server=77.88.8.7
+server=77.88.8.3
 
-options {
-    listen-on { any; };
-    listen-on-v6 { any; };
-    directory "${ZONE_DIR}";
-    allow-query { any; };
-    recursion yes;
-    forwarders {
-        77.88.8.7;
-        77.88.8.3;
-    };
-    forward only;
-    dnssec-validation no;
-};
+cache-size=1000
+all-servers
+no-negcache
 
-zone "au-team.irpo" IN {
-    type master;
-    file "${ZONE_DIR}/au-team.irpo.zone";
-    allow-update { none; };
-};
+# Прямые записи зоны au-team.irpo
+host-record=hq-rtr.au-team.irpo,${IP_HQ_RTR}
+host-record=hq-srv.au-team.irpo,${IP_HQ_SRV}
+host-record=hq-cli.au-team.irpo,${IP_HQ_CLI}
+host-record=br-rtr.au-team.irpo,${IP_BR_RTR}
+host-record=br-srv.au-team.irpo,${IP_BR_SRV}
+host-record=docker.au-team.irpo,${IP_DOCKER}
+host-record=web.au-team.irpo,${IP_WEB}
 
-zone "1.168.192.in-addr.arpa" IN {
-    type master;
-    file "${ZONE_DIR}/192.168.1.zone";
-    allow-update { none; };
-};
+# Обратные PTR-записи
+ptr-record=$(echo "$IP_HQ_RTR" | awk -F. '{print $4"."$3"."$2"."$1}').in-addr.arpa,hq-rtr.au-team.irpo
+ptr-record=$(echo "$IP_HQ_SRV" | awk -F. '{print $4"."$3"."$2"."$1}').in-addr.arpa,hq-srv.au-team.irpo
+ptr-record=$(echo "$IP_HQ_CLI" | awk -F. '{print $4"."$3"."$2"."$1}').in-addr.arpa,hq-cli.au-team.irpo
 EOF
-    else
-        cat > "$NAMED_CONF" <<EOF
-// named.conf.local — HQ-SRV DNS зоны
-// Демоэкзамен 09.02.06 (2026)
 
-zone "au-team.irpo" IN {
-    type master;
-    file "${ZONE_DIR}/au-team.irpo.zone";
-    allow-update { none; };
-};
+    ok "Конфиг /etc/dnsmasq.conf создан"
 
-zone "1.168.192.in-addr.arpa" IN {
-    type master;
-    file "${ZONE_DIR}/192.168.1.zone";
-    allow-update { none; };
-};
-EOF
-        OPTS_CONF="/etc/bind/named.conf.options"
-        if [[ -f "$OPTS_CONF" ]]; then
-            cp "$OPTS_CONF" "${OPTS_CONF}.bak"
-            cat > "$OPTS_CONF" <<EOF
-options {
-    directory "/var/cache/bind";
-    forwarders {
-        77.88.8.7;
-        77.88.8.3;
-    };
-    forward only;
-    dnssec-validation no;
-    listen-on { any; };
-    allow-query { any; };
-    recursion yes;
-};
-EOF
-        fi
-    fi
-    ok "Сгенерирован $NAMED_CONF"
-
-    info "Генерирую прямую зону: ${ZONE_DIR}/au-team.irpo.zone"
-    cat > "${ZONE_DIR}/au-team.irpo.zone" <<EOF
-\$TTL 3600
-@   IN  SOA hq-srv.au-team.irpo. admin.au-team.irpo. (
-            2026031301  ; Serial
-            3600        ; Refresh
-            900         ; Retry
-            604800      ; Expire
-            3600 )      ; Minimum TTL
-
-    IN  NS  hq-srv.au-team.irpo.
-
-hq-rtr  IN  A   ${IP_HQ_RTR}
-br-rtr  IN  A   ${IP_BR_RTR}
-hq-srv  IN  A   ${IP_HQ_SRV}
-hq-cli  IN  A   ${IP_HQ_CLI}
-br-srv  IN  A   ${IP_BR_SRV}
-docker  IN  A   ${IP_DOCKER}
-web     IN  A   ${IP_WEB}
-EOF
-    ok "Прямая зона au-team.irpo создана"
-
-    info "Генерирую обратную зону: ${ZONE_DIR}/192.168.1.zone"
-    cat > "${ZONE_DIR}/192.168.1.zone" <<EOF
-\$TTL 3600
-@   IN  SOA hq-srv.au-team.irpo. admin.au-team.irpo. (
-            2026031301  ; Serial
-            3600        ; Refresh
-            900         ; Retry
-            604800      ; Expire
-            3600 )      ; Minimum TTL
-
-    IN  NS  hq-srv.au-team.irpo.
-
-${HQ_RTR_OCTETS[3]}  IN  PTR hq-rtr.au-team.irpo.
-${HQ_SRV_OCTETS[3]}  IN  PTR hq-srv.au-team.irpo.
-EOF
-    IFS='.' read -ra HQ_CLI_OCTS <<< "$IP_HQ_CLI"
-    if [[ "${HQ_CLI_OCTS[0]}.${HQ_CLI_OCTS[1]}.${HQ_CLI_OCTS[2]}" == "192.168.1" ]]; then
-        echo "${HQ_CLI_OCTS[3]}  IN  PTR hq-cli.au-team.irpo." >> "${ZONE_DIR}/192.168.1.zone"
-    fi
-    ok "Обратная зона 192.168.1.x создана"
-
-    chown -R "${NAMED_USER}:${NAMED_USER}" "$ZONE_DIR" 2>/dev/null || true
-    chmod 640 "${ZONE_DIR}/au-team.irpo.zone" "${ZONE_DIR}/192.168.1.zone" 2>/dev/null || true
-
-    if named-checkconf 2>/dev/null; then
-        ok "Конфиг named валиден"
-    else
-        warn "named-checkconf выявил ошибки, проверьте вручную"
-    fi
-
-    # Запуск: пробуем systemctl, затем SysV service (Альт Линукс)
+    # Запуск dnsmasq
     DNS_STARTED=0
-    for svc in named bind9; do
-        if systemctl enable --now "$svc" 2>/dev/null; then
-            ok "DNS-сервер ($svc) запущен через systemctl"
-            DNS_STARTED=1
-            break
-        fi
-    done
-    if [[ $DNS_STARTED -eq 0 ]]; then
-        # Fallback: SysV init — Альт Линукс использует service bind
-        if service bind start 2>/dev/null; then
-            chkconfig bind on 2>/dev/null || true
-            ok "DNS-сервер (bind) запущен через service"
-            DNS_STARTED=1
-        elif service named start 2>/dev/null; then
-            chkconfig named on 2>/dev/null || true
-            ok "DNS-сервер (named) запущен через service"
-            DNS_STARTED=1
-        fi
+    if systemctl enable --now dnsmasq 2>/dev/null; then
+        ok "dnsmasq запущен через systemctl"
+        DNS_STARTED=1
+    elif service dnsmasq start 2>/dev/null; then
+        chkconfig dnsmasq on 2>/dev/null || true
+        ok "dnsmasq запущен через service"
+        DNS_STARTED=1
     fi
+
     if [[ $DNS_STARTED -eq 1 ]]; then
+        # Проверка
+        sleep 1
+        if dig +short hq-srv.au-team.irpo @127.0.0.1 &>/dev/null; then
+            ok "DNS отвечает: hq-srv.au-team.irpo → ${IP_HQ_SRV}"
+        else
+            warn "dnsmasq запущен, но dig не отвечает — проверьте вручную"
+        fi
         STATUS["dns"]="OK"
     else
-        error "Не удалось запустить DNS-сервер"
+        error "Не удалось запустить dnsmasq"
         STATUS["dns"]="ERROR"
     fi
 else
-    warn "bind/named не найден после установки, пропускаю DNS"
+    warn "dnsmasq не найден после установки, пропускаю DNS"
     STATUS["dns"]="SKIP"
 fi
 
-# ─── Итоговый статус ────────────────────────────────────────────────────────
+# ─── Итоговый статус ───────────────────────────────────────────────────
 echo
 echo "============================================================"
 echo "  Итог настройки HQ-SRV"
@@ -418,4 +322,4 @@ echo "============================================================"
 echo
 ok "Настройка HQ-SRV завершена!"
 info "SSH: порт 2026, пользователь sshuser, конфиг: $SSHD_CONF"
-info "DNS: зона au-team.irpo, форвардеры 77.88.8.7, 77.88.8.3"
+info "DNS: dnsmasq, зона au-team.irpo, форвардеры 77.88.8.7, 77.88.8.3"
