@@ -48,6 +48,12 @@ if ! command -v nmcli &>/dev/null; then
     exit 1
 fi
 
+# Убеждаемся что sudo установлен (на голом Alt Workstation иногда нет)
+if ! command -v sudo &>/dev/null; then
+    info "Устанавливаю пакет sudo..."
+    apt-get install -y sudo 2>/dev/null || warn "Не удалось установить sudo автоматически"
+fi
+
 echo
 echo "============================================================"
 echo "  Настройка HQ-CLI (Alt Workstation) — демоэкзамен 2026"
@@ -219,6 +225,14 @@ fi
 nmcli con modify "$CON_NAME" ipv4.dns "$DNS_IP" ipv4.dns-search "$DOMAIN"
 ok "DNS: $DNS_IP, домен поиска: $DOMAIN"
 STATUS["dns"]="OK"
+
+# Гарантируем существование /etc/sudoers.d (на минимальном Alt Workstation может отсутствовать)
+mkdir -p /etc/sudoers.d
+chmod 750 /etc/sudoers.d
+# Подключаем sudoers.d в основной /etc/sudoers если ещё не подключён
+if [[ -f /etc/sudoers ]] && ! grep -qE "^#?includedir /etc/sudoers.d" /etc/sudoers; then
+    echo "#includedir /etc/sudoers.d" >> /etc/sudoers
+fi
 
 # ─── 5. Пользователь sshuser (задание 3) ─────────────────────────────────────
 info "[Задание 3] Создание пользователя ${SSH_USER} (uid=${USER_UID})..."
