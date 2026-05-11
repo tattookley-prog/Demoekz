@@ -263,24 +263,43 @@ STATUS["remote_user"]="OK"
 # ─── 7. Настройка SSH клиента и сервера (задание 5) ──────────────────────────
 info "[Задание 5] Настройка SSH..."
 
-# На Alt Workstation openssh-server может не быть — проверяем и ставим
-if ! command -v sshd &>/dev/null; then
-    info "sshd не найден, устанавливаю openssh-server..."
-    if apt-get install -y openssh-server 2>/dev/null; then
-        ok "openssh-server установлен"
+if [[ -f /etc/openssh/sshd_config ]]; then
+    SSHD_CONF="/etc/openssh/sshd_config"
+    SSH_DIR="/etc/openssh"
+elif [[ -f /etc/ssh/sshd_config ]]; then
+    SSHD_CONF="/etc/ssh/sshd_config"
+    SSH_DIR="/etc/ssh"
+else
+    warn "openssh-server не найден. Требуется интернет для установки."
+    warn "Если установка зависнет — Ctrl+C, проверь сеть и запусти скрипт ещё раз."
+    info "openssh-server не найден, устанавливаю..."
+    apt-get install -y openssh-server 2>/dev/null || \
+    apt-get install -y openssh 2>/dev/null || true
+
+    if [[ -f /etc/openssh/sshd_config ]]; then
+        SSHD_CONF="/etc/openssh/sshd_config"
+        SSH_DIR="/etc/openssh"
+    elif [[ -f /etc/ssh/sshd_config ]]; then
+        SSHD_CONF="/etc/ssh/sshd_config"
+        SSH_DIR="/etc/ssh"
     else
-        warn "Не удалось установить openssh-server (нет интернета?)"
-        warn "Установи вручную: apt-get install -y openssh-server"
-        STATUS["ssh"]="SKIP"
+        SSHD_CONF=""
+        SSH_DIR=""
     fi
 fi
 
-if command -v sshd &>/dev/null; then
-    SSHD_CONF="/etc/ssh/sshd_config"
+if [[ -z "$SSHD_CONF" ]]; then
+    error "Файл sshd_config не найден даже после попытки установки openssh-server"
+    error "На Alt Workstation openssh-server по умолчанию не установлен."
+    error "Проверьте интернет на HQ-CLI и установите вручную:"
+    error "  sudo apt-get update && sudo apt-get install -y openssh-server"
+    STATUS["ssh"]="ERROR"
+else
+    info "Используем конфиг: $SSHD_CONF"
     cp "$SSHD_CONF" "${SSHD_CONF}.bak"
 
     # Баннер
-    echo "$SSH_BANNER_TEXT" > /etc/ssh/banner
+    echo "$SSH_BANNER_TEXT" > "${SSH_DIR}/banner"
 
     set_sshd_param() {
         local param="$1" value="$2"
@@ -295,7 +314,7 @@ if command -v sshd &>/dev/null; then
     set_sshd_param "AllowUsers"      "$SSH_USER"
     set_sshd_param "MaxAuthTries"    "$SSH_MAX_TRIES"
     set_sshd_param "PermitRootLogin" "no"
-    set_sshd_param "Banner"          "/etc/ssh/banner"
+    set_sshd_param "Banner"          "${SSH_DIR}/banner"
 
     if sshd -t 2>/dev/null; then
         ok "Конфиг SSH валиден"
