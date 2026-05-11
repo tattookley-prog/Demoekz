@@ -130,6 +130,7 @@ if timedatectl set-timezone "$TZ_NAME" 2>/dev/null; then
 fi
 if [[ $TZ_SET -eq 0 ]]; then
     if [[ -f "/usr/share/zoneinfo/${TZ_NAME}" ]]; then
+        rm -f /etc/localtime
         ln -sf "/usr/share/zoneinfo/${TZ_NAME}" /etc/localtime
         echo "$TZ_NAME" > /etc/timezone 2>/dev/null || true
         ok "Часовой пояс установлен через symlink: $TZ_NAME"

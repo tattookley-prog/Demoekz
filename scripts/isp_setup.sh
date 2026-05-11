@@ -112,7 +112,8 @@ if timedatectl set-timezone "$TZ_NAME" 2>/dev/null; then
 else
     # Ручной метод для Альт сервер если timedatectl недоступен
     if [[ -f "/usr/share/zoneinfo/${TZ_NAME}" ]]; then
-        cp "/usr/share/zoneinfo/${TZ_NAME}" /etc/localtime
+        rm -f /etc/localtime
+        ln -sf "/usr/share/zoneinfo/${TZ_NAME}" /etc/localtime
         echo "$TZ_NAME" > /etc/timezone 2>/dev/null || true
         ok "Часовой пояс установлен вручную: $TZ_NAME"
         STATUS["timezone"]="OK"

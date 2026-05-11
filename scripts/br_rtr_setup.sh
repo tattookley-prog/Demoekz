@@ -117,6 +117,12 @@ info "Часовой пояс: $TZ_NAME"
 if timedatectl set-timezone "$TZ_NAME" 2>/dev/null; then
     ok "Часовой пояс установлен: $TZ_NAME"
     STATUS["timezone"]="OK"
+elif [[ -f "/usr/share/zoneinfo/${TZ_NAME}" ]]; then
+    rm -f /etc/localtime
+    ln -sf "/usr/share/zoneinfo/${TZ_NAME}" /etc/localtime
+    echo "$TZ_NAME" > /etc/timezone 2>/dev/null || true
+    ok "Часовой пояс установлен через symlink: $TZ_NAME"
+    STATUS["timezone"]="OK"
 else
     error "Ошибка установки часового пояса"
     STATUS["timezone"]="ERROR"
