@@ -76,6 +76,19 @@ HQ_NAT_NET="${HQ_NAT_NET:-172.16.1.0/28}"
 read -rp "Сеть для NAT со стороны BR-RTR [172.16.2.0/28]: " BR_NAT_NET
 BR_NAT_NET="${BR_NAT_NET:-172.16.2.0/28}"
 
+echo
+echo "--- Статическая ARP-запись ---"
+read -rp "Настроить статическую ARP-запись (systemd)? [y/N]: " CONFIGURE_STATIC_ARP
+CONFIGURE_STATIC_ARP="${CONFIGURE_STATIC_ARP:-N}"
+ARP_IP=""; ARP_MAC=""
+if [[ "${CONFIGURE_STATIC_ARP,,}" =~ ^y ]]; then
+    read -rp "IP-адрес для ARP-записи [10.12.34.254]: " ARP_IP
+    ARP_IP="${ARP_IP:-10.12.34.254}"
+
+    read -rp "MAC-адрес для ARP-записи [28:af:fd:86:8d:49]: " ARP_MAC
+    ARP_MAC="${ARP_MAC:-28:af:fd:86:8d:49}"
+fi
+
 HOSTNAME_FQDN="isp.${DOMAIN}"
 
 echo
@@ -87,6 +100,11 @@ echo "  Интерфейс → HQ-RTR:       $HQ_IFACE ($HQ_IP), NAT сеть $H
 echo "  Интерфейс → BR-RTR:       $BR_IFACE ($BR_IP), NAT сеть $BR_NAT_NET"
 echo "  Часовой пояс:              $TZ_NAME"
 echo "  DNS-домен:                 ${DOMAIN}"
+if [[ "${CONFIGURE_STATIC_ARP,,}" =~ ^y ]]; then
+    echo "  Статическая ARP:           ENABLED ($ARP_IP -> $ARP_MAC)"
+else
+    echo "  Статическая ARP:           SKIP"
+fi
 echo
 read -rp "Продолжить? [y/N]: " CONFIRM
 if [[ ! "${CONFIRM,,}" =~ ^y ]]; then
@@ -299,12 +317,66 @@ else
     fi
 fi
 
+# ─── 6. Статическая ARP-запись (автозагрузка через systemd) ───────────────────
+if [[ "${CONFIGURE_STATIC_ARP,,}" =~ ^y ]]; then
+    info "Настройка статической ARP-записи через systemd..."
+    STATIC_ARP_SERVICE="/etc/systemd/system/static-arp.service"
+
+    if [[ -f "$STATIC_ARP_SERVICE" ]]; then
+        cp "$STATIC_ARP_SERVICE" "${STATIC_ARP_SERVICE}.bak"
+        info "Сделана резервная копия: ${STATIC_ARP_SERVICE}.bak"
+    fi
+
+    cat > "$STATIC_ARP_SERVICE" <<EOF2
+[Unit]
+Description="static arp"
+After=default.target
+
+[Service]
+ExecStart=/bin/arp -s ${ARP_IP} ${ARP_MAC}
+
+[Install]
+WantedBy=default.target
+EOF2
+
+    info "Перезапуск systemd демонов (daemon-reload)..."
+    if systemctl daemon-reload; then
+        ok "daemon-reload выполнен"
+    else
+        error "Ошибка при выполнении daemon-reload"
+        STATUS["static_arp"]="ERROR"
+    fi
+
+    if [[ "${STATUS[static_arp]:-}" != "ERROR" ]]; then
+        info "Включение и запуск сервиса static-arp..."
+        if systemctl enable --now static-arp; then
+            ok "Сервис static-arp включён в автозагрузку и запущен"
+            STATUS["static_arp"]="OK"
+        else
+            error "Ошибка при включении/запуске static-arp"
+            STATUS["static_arp"]="ERROR"
+        fi
+    fi
+
+    info "Проверка ARP-записи для $ARP_IP..."
+    if arp -n | grep -q -- "$ARP_IP"; then
+        ok "ARP-запись найдена:"
+        arp -n | grep -- "$ARP_IP" || true
+    else
+        warn "ARP-запись для $ARP_IP не обнаружена в таблице"
+        [[ "${STATUS[static_arp]:-}" == "OK" ]] && STATUS["static_arp"]="SKIP"
+    fi
+else
+    info "Шаг статической ARP-записи пропущен"
+    STATUS["static_arp"]="SKIP"
+fi
+
 # ─── Итоговый статус ──────────────────────────────────────────────────────────
 echo
 echo "============================================================"
 echo "  Итог настройки ISP (Альт сервер)"
 echo "============================================================"
-for key in hostname timezone ip_wan ip_hq ip_br ip_forward nat; do
+for key in hostname timezone ip_wan ip_hq ip_br ip_forward nat static_arp; do
     val="${STATUS[$key]:-SKIP}"
     case "$val" in
         OK)    echo -e "  ${GREEN}[OK]${NC}    $key" ;;
