@@ -131,7 +131,15 @@ else
 fi
 echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-ipforward.conf
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
-ok "IP forwarding включён (постоянно)"
+# etcnet применяет /etc/net/sysctl.conf при подъёме сети — пишем сюда,
+# чтобы форвардинг переживал systemctl restart network и ребут на Альт Сервере
+mkdir -p /etc/net
+if grep -q '^[[:space:]]*#*[[:space:]]*net\.ipv4\.ip_forward' /etc/net/sysctl.conf 2>/dev/null; then
+    sed -i 's/^[[:space:]]*#*[[:space:]]*net\.ipv4\.ip_forward.*/net.ipv4.ip_forward = 1/' /etc/net/sysctl.conf
+else
+    echo 'net.ipv4.ip_forward = 1' >> /etc/net/sysctl.conf
+fi
+ok "IP forwarding включён (постоянно, в т. ч. /etc/net/sysctl.conf)"
 STATUS["ip_forward"]="OK"
 
 # ─── Вспомогательная функция: etcnet static ───────────────────────────────────
