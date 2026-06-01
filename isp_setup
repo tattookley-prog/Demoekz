@@ -1,0 +1,19 @@
+добавление статической arp-записи альт сервер (с автозагрузкой)
+1. создание сервиса в /etc/systemd/system/static-arp.service:
+[Unit]
+Description="static arp"
+After=default.target
+
+[Service]
+ExecStart=/bin/arp -s 10.12.x.254 xx:xx:xx:xx:xx:xx
+
+[Install]
+WantedBy=default.target
+
+2. перезапуск демонов:
+
+systemctl daemon-reload
+
+
+3. добавление в автозагрузку:
+systemctl enable --now static-arp
