@@ -243,8 +243,14 @@ if grep -q '^#*\s*net\.ipv4\.ip_forward' "$SYSCTL_CONF"; then
 else
     echo 'net.ipv4.ip_forward=1' >> "$SYSCTL_CONF"
 fi
+mkdir -p /etc/net
+if grep -q '^\s*net\.ipv4\.ip_forward' /etc/net/sysctl.conf 2>/dev/null; then
+    sed -i 's/^#*\s*net\.ipv4\.ip_forward.*/net.ipv4.ip_forward = 1/' /etc/net/sysctl.conf
+else
+    echo 'net.ipv4.ip_forward = 1' >> /etc/net/sysctl.conf
+fi
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
-ok "IP forwarding включён (постоянно через /etc/sysctl.conf)"
+ok "IP forwarding включён (постоянно через /etc/sysctl.conf и /etc/net/sysctl.conf)"
 STATUS["ip_forward"]="OK"
 
 # ─── 5. NAT через nftables ────────────────────────────────────────────────────
