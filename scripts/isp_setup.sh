@@ -277,9 +277,9 @@ table ip nat {
     chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
         # Masquerade: трафик от HQ-RTR (${HQ_NAT_NET}) → Интернет
-        ip saddr ${HQ_NAT_NET} iifname "${HQ_IFACE}" oifname "${WAN_IFACE}" masquerade
+        ip saddr ${HQ_NAT_NET} oifname "${WAN_IFACE}" masquerade
         # Masquerade: трафик от BR-RTR (${BR_NAT_NET}) → Интернет
-        ip saddr ${BR_NAT_NET} iifname "${BR_IFACE}" oifname "${WAN_IFACE}" masquerade
+        ip saddr ${BR_NAT_NET} oifname "${WAN_IFACE}" masquerade
     }
 }
 
