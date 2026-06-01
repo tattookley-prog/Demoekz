@@ -183,7 +183,13 @@ if grep -q '^net.ipv4.ip_forward' /etc/sysctl.conf 2>/dev/null; then
 else
     echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
 fi
-ok "IP forwarding включён"
+mkdir -p /etc/net
+if grep -q '^\s*net\.ipv4\.ip_forward' /etc/net/sysctl.conf 2>/dev/null; then
+    sed -i 's/^#*\s*net\.ipv4\.ip_forward.*/net.ipv4.ip_forward = 1/' /etc/net/sysctl.conf
+else
+    echo 'net.ipv4.ip_forward = 1' >> /etc/net/sysctl.conf
+fi
+ok "IP forwarding включён (постоянно через /etc/sysctl.conf, /etc/sysctl.d/99-ipforward.conf и /etc/net/sysctl.conf)"
 STATUS["ip_forward"]="OK"
 
 # ─── 4. Загрузка модуля 8021q ─────────────────────────────────────────────────
