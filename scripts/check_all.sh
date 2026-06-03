@@ -16,7 +16,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 fail()  { echo -e "${RED}[FAIL]${NC}  $*"; }
 
 if [[ $EUID -ne 0 ]]; then
-    error "Скрипт должен быть запущен от имени root (sudo или su -)"
+    error "Скрипт должен быть запущен от имени root (пример: sudo bash scripts/check_all.sh)"
     exit 1
 fi
 
@@ -34,7 +34,7 @@ add_result() {
 run_ok_fail_check() {
     local key="$1" title="$2" cmd="$3"
     info "$title"
-    if eval "$cmd" >/dev/null 2>&1; then
+    if bash -o pipefail -c "$cmd" >/dev/null 2>&1; then
         ok "$title"
         add_result "$key" "$title" "OK"
     else
@@ -51,16 +51,6 @@ run_skip_check() {
 
 check_cmd() {
     command -v "$1" >/dev/null 2>&1
-}
-
-check_ip_cidr() {
-    local cidr="$1"
-    ip -o -4 addr show | awk '{print $4}' | grep -Fxq "$cidr"
-}
-
-check_ip_regex() {
-    local pattern="$1"
-    ip -o -4 addr show | awk '{print $4}' | grep -Eq "$pattern"
 }
 
 detect_sshd_conf() {
@@ -84,8 +74,8 @@ run_isp_checks() {
     run_hostname_check "isp_hostname" "isp.au-team.irpo"
 
     if check_cmd ip; then
-        run_ok_fail_check "isp_ip_hq" "IP 172.16.1.1/28" "check_ip_cidr '172.16.1.1/28'"
-        run_ok_fail_check "isp_ip_br" "IP 172.16.2.1/28" "check_ip_cidr '172.16.2.1/28'"
+        run_ok_fail_check "isp_ip_hq" "IP 172.16.1.1/28" "ip -o -4 addr show | awk '{print \$4}' | grep -Fxq '172.16.1.1/28'"
+        run_ok_fail_check "isp_ip_br" "IP 172.16.2.1/28" "ip -o -4 addr show | awk '{print \$4}' | grep -Fxq '172.16.2.1/28'"
     else
         run_skip_check "isp_ip_hq" "IP 172.16.1.1/28" "нет команды ip"
         run_skip_check "isp_ip_br" "IP 172.16.2.1/28" "нет команды ip"
@@ -100,8 +90,8 @@ run_isp_checks() {
     fi
 
     if check_cmd ping; then
-        run_ok_fail_check "isp_ping_hq" "Ping 172.16.1.2" "ping -c1 -W1 172.16.1.2"
-        run_ok_fail_check "isp_ping_br" "Ping 172.16.2.2" "ping -c1 -W1 172.16.2.2"
+        run_ok_fail_check "isp_ping_hq" "Ping 172.16.1.2" "ping -c1 -W2 172.16.1.2"
+        run_ok_fail_check "isp_ping_br" "Ping 172.16.2.2" "ping -c1 -W2 172.16.2.2"
     else
         run_skip_check "isp_ping_hq" "Ping 172.16.1.2" "нет команды ping"
         run_skip_check "isp_ping_br" "Ping 172.16.2.2" "нет команды ping"
@@ -114,10 +104,10 @@ run_hq_rtr_checks() {
     run_hostname_check "hq_rtr_hostname" "hq-rtr.au-team.irpo"
 
     if check_cmd ip; then
-        run_ok_fail_check "hq_rtr_wan" "WAN 172.16.1.2/28" "check_ip_cidr '172.16.1.2/28'"
-        run_ok_fail_check "hq_rtr_vlan100" "VLAN100 192.168.1.1/27" "check_ip_cidr '192.168.1.1/27'"
-        run_ok_fail_check "hq_rtr_vlan200" "VLAN200 192.168.2.1/27" "check_ip_cidr '192.168.2.1/27'"
-        run_ok_fail_check "hq_rtr_vlan999" "VLAN999 192.168.99.1/29" "check_ip_cidr '192.168.99.1/29'"
+        run_ok_fail_check "hq_rtr_wan" "WAN 172.16.1.2/28" "ip -o -4 addr show | awk '{print \$4}' | grep -Fxq '172.16.1.2/28'"
+        run_ok_fail_check "hq_rtr_vlan100" "VLAN100 192.168.1.1/27" "ip -o -4 addr show | awk '{print \$4}' | grep -Fxq '192.168.1.1/27'"
+        run_ok_fail_check "hq_rtr_vlan200" "VLAN200 192.168.2.1/27" "ip -o -4 addr show | awk '{print \$4}' | grep -Fxq '192.168.2.1/27'"
+        run_ok_fail_check "hq_rtr_vlan999" "VLAN999 192.168.99.1/29" "ip -o -4 addr show | awk '{print \$4}' | grep -Fxq '192.168.99.1/29'"
         run_ok_fail_check "hq_rtr_gre_ip" "GRE gre1 = 10.0.0.1/30" "ip -o -4 addr show dev gre1 | awk '{print \$4}' | grep -Fxq '10.0.0.1/30'"
     else
         run_skip_check "hq_rtr_wan" "WAN 172.16.1.2/28" "нет команды ip"
@@ -128,7 +118,7 @@ run_hq_rtr_checks() {
     fi
 
     if check_cmd ping; then
-        run_ok_fail_check "hq_rtr_gre_ping" "Ping 10.0.0.2" "ping -c1 -W1 10.0.0.2"
+        run_ok_fail_check "hq_rtr_gre_ping" "Ping 10.0.0.2" "ping -c1 -W2 10.0.0.2"
     else
         run_skip_check "hq_rtr_gre_ping" "Ping 10.0.0.2" "нет команды ping"
     fi
@@ -162,7 +152,7 @@ run_hq_rtr_checks() {
     fi
 
     if check_cmd ping; then
-        run_ok_fail_check "hq_rtr_ping_inet" "Ping 77.88.8.8" "ping -c1 -W1 77.88.8.8"
+        run_ok_fail_check "hq_rtr_ping_inet" "Ping 77.88.8.8" "ping -c1 -W2 77.88.8.8"
     else
         run_skip_check "hq_rtr_ping_inet" "Ping 77.88.8.8" "нет команды ping"
     fi
@@ -174,8 +164,8 @@ run_br_rtr_checks() {
     run_hostname_check "br_rtr_hostname" "br-rtr.au-team.irpo"
 
     if check_cmd ip; then
-        run_ok_fail_check "br_rtr_wan" "WAN 172.16.2.2/28" "check_ip_cidr '172.16.2.2/28'"
-        run_ok_fail_check "br_rtr_lan" "LAN 192.168.3.1/28" "check_ip_cidr '192.168.3.1/28'"
+        run_ok_fail_check "br_rtr_wan" "WAN 172.16.2.2/28" "ip -o -4 addr show | awk '{print \$4}' | grep -Fxq '172.16.2.2/28'"
+        run_ok_fail_check "br_rtr_lan" "LAN 192.168.3.1/28" "ip -o -4 addr show | awk '{print \$4}' | grep -Fxq '192.168.3.1/28'"
         run_ok_fail_check "br_rtr_gre_ip" "GRE gre1 = 10.0.0.2/30" "ip -o -4 addr show dev gre1 | awk '{print \$4}' | grep -Fxq '10.0.0.2/30'"
     else
         run_skip_check "br_rtr_wan" "WAN 172.16.2.2/28" "нет команды ip"
@@ -184,7 +174,7 @@ run_br_rtr_checks() {
     fi
 
     if check_cmd ping; then
-        run_ok_fail_check "br_rtr_gre_ping" "Ping 10.0.0.1" "ping -c1 -W1 10.0.0.1"
+        run_ok_fail_check "br_rtr_gre_ping" "Ping 10.0.0.1" "ping -c1 -W2 10.0.0.1"
     else
         run_skip_check "br_rtr_gre_ping" "Ping 10.0.0.1" "нет команды ping"
     fi
@@ -212,7 +202,7 @@ run_br_rtr_checks() {
     fi
 
     if check_cmd ping; then
-        run_ok_fail_check "br_rtr_ping_inet" "Ping 77.88.8.8" "ping -c1 -W1 77.88.8.8"
+        run_ok_fail_check "br_rtr_ping_inet" "Ping 77.88.8.8" "ping -c1 -W2 77.88.8.8"
     else
         run_skip_check "br_rtr_ping_inet" "Ping 77.88.8.8" "нет команды ping"
     fi
@@ -224,7 +214,7 @@ run_hq_srv_checks() {
     run_hostname_check "hq_srv_hostname" "hq-srv.au-team.irpo"
 
     if check_cmd ip; then
-        run_ok_fail_check "hq_srv_ip" "IP 192.168.1.2/27" "check_ip_cidr '192.168.1.2/27'"
+        run_ok_fail_check "hq_srv_ip" "IP 192.168.1.2/27" "ip -o -4 addr show | awk '{print \$4}' | grep -Fxq '192.168.1.2/27'"
     else
         run_skip_check "hq_srv_ip" "IP 192.168.1.2/27" "нет команды ip"
     fi
@@ -233,7 +223,7 @@ run_hq_srv_checks() {
 
     local sshd_conf
     if sshd_conf="$(detect_sshd_conf 2>/dev/null)"; then
-        run_ok_fail_check "hq_srv_ssh_port_conf" "sshd_config: Port 2026" "grep -Eq '^[[:space:]]*Port[[:space:]]+2026([[:space:]]*#.*)?$' '$sshd_conf'"
+        run_ok_fail_check "hq_srv_ssh_port_conf" "sshd_config: Port 2026" "grep -Eq '^[[:space:]]*Port[[:space:]]+2026([[:space:]]*#.*)?$' \"$sshd_conf\""
     else
         run_skip_check "hq_srv_ssh_port_conf" "sshd_config: Port 2026" "sshd_config не найден"
     fi
@@ -261,7 +251,7 @@ run_br_srv_checks() {
     run_hostname_check "br_srv_hostname" "br-srv.au-team.irpo"
 
     if check_cmd ip; then
-        run_ok_fail_check "br_srv_ip" "IP 192.168.3.2/28" "check_ip_cidr '192.168.3.2/28'"
+        run_ok_fail_check "br_srv_ip" "IP 192.168.3.2/28" "ip -o -4 addr show | awk '{print \$4}' | grep -Fxq '192.168.3.2/28'"
     else
         run_skip_check "br_srv_ip" "IP 192.168.3.2/28" "нет команды ip"
     fi
@@ -270,8 +260,8 @@ run_br_srv_checks() {
 
     local sshd_conf
     if sshd_conf="$(detect_sshd_conf 2>/dev/null)"; then
-        run_ok_fail_check "br_srv_ssh_port_conf" "sshd_config: Port 2026" "grep -Eq '^[[:space:]]*Port[[:space:]]+2026([[:space:]]*#.*)?$' '$sshd_conf'"
-        run_ok_fail_check "br_srv_ssh_banner_conf" "sshd_config: Banner задан" "grep -Eq '^[[:space:]]*Banner[[:space:]]+[^#[:space:]]+' '$sshd_conf'"
+        run_ok_fail_check "br_srv_ssh_port_conf" "sshd_config: Port 2026" "grep -Eq '^[[:space:]]*Port[[:space:]]+2026([[:space:]]*#.*)?$' \"$sshd_conf\""
+        run_ok_fail_check "br_srv_ssh_banner_conf" "sshd_config: Banner задан" "grep -Eq '^[[:space:]]*Banner[[:space:]]+[^#[:space:]]+' \"$sshd_conf\""
     else
         run_skip_check "br_srv_ssh_port_conf" "sshd_config: Port 2026" "sshd_config не найден"
         run_skip_check "br_srv_ssh_banner_conf" "sshd_config: Banner задан" "sshd_config не найден"
@@ -298,8 +288,8 @@ run_hq_cli_checks() {
     run_hostname_check "hq_cli_hostname" "hq-cli.au-team.irpo"
 
     if check_cmd ip; then
-        run_ok_fail_check "hq_cli_dhcp_ip" "DHCP IP из 192.168.2.x/27" "check_ip_regex '^192\\.168\\.2\\.[0-9]+/27$'"
-        run_ok_fail_check "hq_cli_default_route" "Default route через 192.168.2.1" "ip route | grep -q '^default via 192\\.168\\.2\\.1'"
+        run_ok_fail_check "hq_cli_dhcp_ip" "DHCP IP из 192.168.2.x/27" "ip -o -4 addr show | awk '{print \$4}' | grep -Eq '^192\\.168\\.2\\.[0-9]+/27$'"
+        run_ok_fail_check "hq_cli_default_route" "Default route через 192.168.2.1" "ip route | grep -Eq '^default[[:space:]]+via[[:space:]]+192\\.168\\.2\\.1([[:space:]]|$)'"
     else
         run_skip_check "hq_cli_dhcp_ip" "DHCP IP из 192.168.2.x/27" "нет команды ip"
         run_skip_check "hq_cli_default_route" "Default route через 192.168.2.1" "нет команды ip"
@@ -326,12 +316,12 @@ run_end_to_end_checks() {
     if check_cmd ping; then
         local ip
         for ip in "${ips[@]}"; do
-            run_ok_fail_check "e2e_ping_${ip//./_}" "E2E ping $ip" "ping -c1 -W1 $ip"
+            run_ok_fail_check "e2e_ping_ip_${ip//./_}" "E2E ping $ip" "ping -c1 -W2 $ip"
         done
     else
         local ip
         for ip in "${ips[@]}"; do
-            run_skip_check "e2e_ping_${ip//./_}" "E2E ping $ip" "нет команды ping"
+            run_skip_check "e2e_ping_ip_${ip//./_}" "E2E ping $ip" "нет команды ping"
         done
     fi
 
@@ -346,12 +336,12 @@ run_end_to_end_checks() {
     if check_cmd nslookup; then
         local name
         for name in "${names[@]}"; do
-            run_ok_fail_check "e2e_dns_${name//./_}" "E2E DNS $name" "nslookup $name"
+            run_ok_fail_check "e2e_dns_name_${name//./_}" "E2E DNS $name" "nslookup $name"
         done
     else
         local name
         for name in "${names[@]}"; do
-            run_skip_check "e2e_dns_${name//./_}" "E2E DNS $name" "нет команды nslookup"
+            run_skip_check "e2e_dns_name_${name//./_}" "E2E DNS $name" "нет команды nslookup"
         done
     fi
 }
@@ -374,14 +364,16 @@ select_role_menu() {
     while true; do
         echo
         echo "Выберите роль машины:"
+        echo "  0) выход"
         echo "  1) isp"
         echo "  2) hq-rtr"
         echo "  3) br-rtr"
         echo "  4) hq-srv"
         echo "  5) br-srv"
         echo "  6) hq-cli"
-        read -rp "Пункт [1-6]: " role_pick
+        read -rp "Пункт [0-6]: " role_pick
         case "$role_pick" in
+            0) info "Проверка отменена пользователем."; exit 0 ;;
             1) echo "isp"; return 0 ;;
             2) echo "hq-rtr"; return 0 ;;
             3) echo "br-rtr"; return 0 ;;

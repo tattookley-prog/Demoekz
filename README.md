@@ -60,7 +60,7 @@ sudo bash scripts/variant4_gre_dns.sh
 | `scripts/br_rtr_setup.sh` | BR-RTR | Альт JeOS / Linux | 1, 3, 6, 7, 8 |
 | `scripts/hq_srv_setup.sh` | HQ-SRV | Альт сервер | 1, 3, 5, 10 |
 | `scripts/br_srv_setup.sh` | BR-SRV | Альт сервер | 1, 3, 5 |
-| `scripts/check_all.sh` | Любая машина | Альт сервер / Альт JeOS / Альт Linux | Проверка результата (OK/FAIL/SKIP) |
+| `scripts/check_all.sh` | Любая машина | Все роли | Проверка результата (OK/FAIL/SKIP) |
 
 ---
 
