@@ -251,7 +251,7 @@ else
 fi
 
 # ─── 8. GRE-туннель через etcnet (задание 6) ──────────────────────────────────
-info "[Задание 6] Создание GRE-туннеля gre1 (etcnet)..."
+info "[Задание 6] Чистое воссоздание GRE-туннеля gre1 (etcnet)..."
 info "  local=${GRE_LOCAL_IP}, remote=${HQ_WAN_IP}, tunnel=${GRE_TUNNEL_CIDR}"
 
 GRE_DIR="/etc/net/ifaces/gre1"
@@ -271,13 +271,15 @@ CONFIG_IPV4=yes
 EOF2
 echo "$GRE_TUNNEL_CIDR" > "${GRE_DIR}/ipv4address"
 
-# Применяем немедленно
+# Применяем немедленно с чистым воссозданием
 ip tunnel del gre1 2>/dev/null || true
+ip link del gre1 2>/dev/null || true
 ip tunnel add gre1 mode gre local "$GRE_LOCAL_IP" remote "$HQ_WAN_IP" ttl 255
 ip addr add "$GRE_TUNNEL_CIDR" dev gre1
 ip link set gre1 up
+ip link set gre1 multicast on
 
-ok "GRE туннель gre1: ${GRE_TUNNEL_CIDR} → ${HQ_WAN_IP} (etcnet — постоянно)"
+ok "GRE туннель gre1 чисто воссоздан: ${GRE_TUNNEL_CIDR} → ${HQ_WAN_IP} (etcnet — постоянно)"
 STATUS["gre_tunnel"]="OK"
 
 # ─── 9. OSPF через FRR (задание 7) ────────────────────────────────────────────
