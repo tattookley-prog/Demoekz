@@ -43,6 +43,27 @@ run_ok_fail_check() {
     fi
 }
 
+# Как run_ok_fail_check, но с активным ожиданием: повторяет проверку каждую секунду
+# до timeout секунд, прежде чем признать FAIL. Нужно для асинхронных вещей вроде
+# OSPF-соседства, которое после restart network/ребута встаёт за ~40-50 секунд
+# (Hello 10с + обмен БД + Dead 40с). Без ожидания проверка даёт ложный FAIL.
+run_wait_check() {
+    local key="$1" title="$2" cmd="$3" timeout="${4:-60}"
+    info "$title (ожидание до ${timeout}с)"
+    local i
+    for ((i = 1; i <= timeout; i++)); do
+        if bash -o pipefail -c "$cmd" >/dev/null 2>&1; then
+            ok "$title (установлено за ~${i}с)"
+            add_result "$key" "$title" "OK"
+            return 0
+        fi
+        sleep 1
+    done
+    fail "$title (таймаут ${timeout}с)"
+    add_result "$key" "$title" "FAIL"
+    return 0
+}
+
 run_skip_check() {
     local key="$1" title="$2" reason="$3"
     warn "$title (SKIP: $reason)"
@@ -127,7 +148,7 @@ run_hq_rtr_checks() {
     run_ok_fail_check "hq_rtr_frr_active" "FRR active" "systemctl is-active --quiet frr"
 
     if check_cmd vtysh; then
-        run_ok_fail_check "hq_rtr_ospf_neighbors" "OSPF соседи (vtysh)" "vtysh -c 'show ip ospf neighbor' | grep -Eq '([0-9]{1,3}\\.){3}[0-9]{1,3}|Full'"
+        run_wait_check "hq_rtr_ospf_neighbors" "OSPF соседи (vtysh)" "vtysh -c 'show ip ospf neighbor' | grep -Eq '([0-9]{1,3}\\.){3}[0-9]{1,3}|Full'" 60
     else
         run_skip_check "hq_rtr_ospf_neighbors" "OSPF соседи (vtysh)" "нет команды vtysh"
     fi
@@ -183,7 +204,7 @@ run_br_rtr_checks() {
     run_ok_fail_check "br_rtr_frr_active" "FRR active" "systemctl is-active --quiet frr"
 
     if check_cmd vtysh; then
-        run_ok_fail_check "br_rtr_ospf_neighbors" "OSPF соседи (vtysh)" "vtysh -c 'show ip ospf neighbor' | grep -Eq '([0-9]{1,3}\\.){3}[0-9]{1,3}|Full'"
+        run_wait_check "br_rtr_ospf_neighbors" "OSPF соседи (vtysh)" "vtysh -c 'show ip ospf neighbor' | grep -Eq '([0-9]{1,3}\\.){3}[0-9]{1,3}|Full'" 60
     else
         run_skip_check "br_rtr_ospf_neighbors" "OSPF соседи (vtysh)" "нет команды vtysh"
     fi
