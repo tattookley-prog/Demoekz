@@ -282,6 +282,28 @@ ip link set gre1 multicast on
 ok "GRE туннель gre1 чисто воссоздан: ${GRE_TUNNEL_CIDR} → ${HQ_WAN_IP} (etcnet — постоянно)"
 STATUS["gre_tunnel"]="OK"
 
+# ─── 8.1 Автовключение multicast на gre1 для OSPF ─────────────────────────────
+info "Настройка systemd-сервиса gre-multicast.service (persist multicast on gre1)..."
+cat > /etc/systemd/system/gre-multicast.service <<'EOF2'
+[Unit]
+Description=Enable multicast on gre1 for OSPF
+Wants=network.target
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for i in $(seq 1 30); do ip link show gre1 >/dev/null 2>&1 && break; sleep 1; done; ip link set gre1 multicast on'
+
+[Install]
+WantedBy=multi-user.target
+EOF2
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable gre-multicast.service 2>/dev/null || true
+ip link set gre1 multicast on 2>/dev/null || true
+ok "gre-multicast.service установлен, multicast на gre1 включён"
+STATUS["gre_multicast"]="OK"
+
 # ─── 9. OSPF через FRR (задание 7) ────────────────────────────────────────────
 info "[Задание 7] Настройка OSPF через FRR..."
 
@@ -354,7 +376,7 @@ echo
 echo "============================================================"
 echo "  Итог настройки BR-RTR (Альт Сервер — etcnet)"
 echo "============================================================"
-for key in hostname timezone ip_forward ip_wan ip_lan nat gre_tunnel ospf net_admin; do
+for key in hostname timezone ip_forward ip_wan ip_lan nat gre_tunnel gre_multicast ospf net_admin; do
     val="${STATUS[$key]:-SKIP}"
     case "$val" in
         OK)    echo -e "  ${GREEN}[OK]${NC}    $key" ;;
