@@ -60,6 +60,7 @@ sudo bash scripts/variant4_gre_dns.sh
 | `scripts/br_rtr_setup.sh` | BR-RTR | Альт JeOS / Linux | 1, 3, 6, 7, 8 |
 | `scripts/hq_srv_setup.sh` | HQ-SRV | Альт сервер | 1, 3, 5, 10 |
 | `scripts/br_srv_setup.sh` | BR-SRV | Альт сервер | 1, 3, 5 |
+| `scripts/check_all.sh` | Любая машина | Альт сервер / Альт JeOS / Альт Linux | Проверка результата (OK/FAIL/SKIP) |
 
 ---
 
@@ -148,6 +149,15 @@ sudo bash scripts/br_srv_setup.sh
 ```
 **Что делает:** hostname, IP (192.168.3.2/28), пользователь `sshuser` (uid=2026),
 SSH на порту 2026 с баннером, DNS-сервер `dnsmasq`.
+
+#### `scripts/check_all.sh` — проверка выполнения
+```bash
+sudo bash scripts/check_all.sh
+```
+**Что делает:** интерактивно определяет роль узла (или даёт выбрать вручную),
+выполняет релевантные проверки по топологии (`isp`, `hq-rtr`, `br-rtr`, `hq-srv`, `br-srv`, `hq-cli`),
+поддерживает пункт **«Сквозная проверка (end-to-end)»** (ping по всем адресам + проверка DNS-имён)
+и в конце выводит итоговую таблицу со статусами **OK / FAIL / SKIP**.
 
 ---
 
