@@ -106,7 +106,7 @@ echo "$HOSTNAME_FQDN" > /etc/hostname
 ok "Hostname: ${HOSTNAME_FQDN}"
 STATUS["hostname"]="OK"
 
-# ─── 2. Часовой пояс ──────────────────────────────────────────────────────────
+# ─── 2. Часовой пояс ───────────────────────���──────────────────────────────────
 info "Часовой пояс: $TZ_NAME"
 if timedatectl set-timezone "$TZ_NAME" 2>/dev/null; then
     ok "Часовой пояс установлен: $TZ_NAME"
@@ -122,7 +122,7 @@ else
     STATUS["timezone"]="ERROR"
 fi
 
-# ─── 3. IP forwarding ────────────────────────────────────────��────────────────
+# ─── 3. IP forwarding ─────────────────────────────────────────────────────────
 info "Включение IP forwarding..."
 if grep -q '^#*\s*net\.ipv4\.ip_forward' /etc/sysctl.conf 2>/dev/null; then
     sed -i 's/^#*\s*net\.ipv4\.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
@@ -194,59 +194,67 @@ else
     warn "Не удалось перезапустить network — конфиги etcnet применятся после перезагрузки"
 fi
 
-# ─── 7. NAT через nftables (задание 8) ────────────────────────────────────────
-info "[Задание 8] Настройка NAT (masquerade) через nftables..."
+# ─── 7. NAT через iptables (задание 8) ────────────────────────────────────────
+info "[Задание 8] Настройка NAT (MASQUERADE) через iptables..."
 
-if ! command -v nft &>/dev/null; then
-    info "Установка nftables..."
-    apt-get install -y nftables || {
-        error "Не удалось установить nftables"
+# Отключаем nftables, чтобы избежать конфликта backend'ов (двойной NAT)
+if command -v systemctl &>/dev/null; then
+    systemctl disable --now nftables 2>/dev/null || true
+fi
+if command -v nft &>/dev/null; then
+    nft flush ruleset 2>/dev/null || true
+fi
+
+if ! command -v iptables &>/dev/null; then
+    info "Установка iptables..."
+    apt-get install -y iptables || {
+        error "Не удалось установить iptables"
         STATUS["nat"]="ERROR"
     }
 fi
 
-if command -v nft &>/dev/null; then
-    mkdir -p /etc/nftables
-    NFT_CONF="/etc/nftables/nftables.nft"
-    [[ -f "$NFT_CONF" ]] && cp "$NFT_CONF" "${NFT_CONF}.bak"
+if command -v iptables &>/dev/null; then
+    # MASQUERADE для всего трафика в сторону WAN (Интернет)
+    iptables -t nat -F POSTROUTING 2>/dev/null || true
+    iptables -t nat -A POSTROUTING -o "$WAN_IFACE" -j MASQUERADE
+    ok "NAT: MASQUERADE добавлен (out: $WAN_IFACE)"
 
-    cat > "$NFT_CONF" <<EOF2
-#!/usr/sbin/nft -f
-# nftables BR-RTR — демоэкзамен 09.02.06 (2026)
+    # FORWARD: LAN → WAN, обратный established/related и GRE (связность офисов)
+    iptables -F FORWARD 2>/dev/null || true
+    iptables -P FORWARD ACCEPT
+    iptables -A FORWARD -i "$LAN_IFACE" -o "$WAN_IFACE" -j ACCEPT
+    iptables -A FORWARD -i "$WAN_IFACE" -o "$LAN_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    iptables -A FORWARD -i gre1 -j ACCEPT
+    iptables -A FORWARD -o gre1 -j ACCEPT
+    ok "FORWARD-правила добавлены (${LAN_IFACE} ↔ ${WAN_IFACE}, gre1)"
 
-flush ruleset
+    # Сохраняем правила для восстановления после перезагрузки
+    mkdir -p /etc/iptables
+    iptables-save > /etc/iptables/rules.v4
+    ok "Правила iptables сохранены в /etc/iptables/rules.v4"
 
-table ip nat {
-    chain postrouting {
-        type nat hook postrouting priority srcnat; policy accept;
-        oifname "${WAN_IFACE}" masquerade
-    }
-}
+    # systemd-сервис автозагрузки правил (persist across reboot)
+    cat > /etc/systemd/system/iptables-restore.service <<'EOF2'
+[Unit]
+Description=Restore iptables rules
+Wants=network-pre.target
+Before=network-pre.target
+After=local-fs.target
 
-table ip filter {
-    chain forward {
-        type filter hook forward priority filter; policy accept;
-    }
-}
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/iptables-restore /etc/iptables/rules.v4
+
+[Install]
+WantedBy=multi-user.target
 EOF2
-
-    cp "$NFT_CONF" /etc/nftables.conf
-
-    if systemctl enable --now nftables 2>/dev/null; then
-        nft -f "$NFT_CONF"
-        ok "nftables запущен и активирован"
-    else
-        nft -f "$NFT_CONF" && ok "nftables правила применены"
-        if [[ -f /etc/rc.d/rc.local ]]; then
-            grep -q "nft -f" /etc/rc.d/rc.local || {
-                echo "nft -f ${NFT_CONF}" >> /etc/rc.d/rc.local
-                chmod +x /etc/rc.d/rc.local
-            }
-        fi
-    fi
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable iptables-restore.service 2>/dev/null || true
+    ok "iptables-restore.service включён (правила переживут перезагрузку)"
     STATUS["nat"]="OK"
 else
-    warn "nftables не найден, пропускаю NAT"
+    warn "iptables не найден, пропускаю NAT"
     STATUS["nat"]="SKIP"
 fi
 
@@ -394,5 +402,5 @@ info "GRE:      gre1 ${GRE_TUNNEL_CIDR} → ${HQ_WAN_IP}"
 info "OSPF:     FRR, router-id=${OSPF_ROUTER_ID}, сеть ${GRE_NET}"
 echo
 warn "Конфиги etcnet: /etc/net/ifaces/ — применяются при systemctl restart network"
-warn "nftables правила: /etc/nftables/nftables.nft"
+warn "iptables правила: /etc/iptables/rules.v4 (автозагрузка: iptables-restore.service)"
 warn "После перезагрузки всё должно подняться автоматически!"
