@@ -363,10 +363,10 @@ fi
 
 if [[ "${STATUS[nat]:-}" != "ERROR" ]] && [[ "$NFT_SYSTEMD_ENABLED" -eq 0 || "$NFT_SYSTEMD_ACTIVE" -eq 0 ]]; then
     RC_LOCAL="/etc/rc.d/rc.local"
-    RC_LOCAL_LINE="nft -f ${NFT_CONF_ACTIVE}"
+    RC_LOCAL_LINE="nft -f ${NFT_CONF_ACTIVE} # demoekz-isp-nftables"
     mkdir -p /etc/rc.d
     [[ -f "$RC_LOCAL" ]] || echo "#!/bin/bash" > "$RC_LOCAL"
-    sed -i '\|nft -f |d' "$RC_LOCAL"
+    sed -i '\|# demoekz-isp-nftables$|d' "$RC_LOCAL"
     echo "$RC_LOCAL_LINE" >> "$RC_LOCAL"
     info "Добавлен фолбэк автозапуска nftables в ${RC_LOCAL}"
     chmod +x "$RC_LOCAL"
@@ -377,8 +377,7 @@ if [[ "${STATUS[nat]:-}" != "ERROR" ]] && [[ "$NAT_APPLIED" -eq 1 ]]; then
         ok "В активном ruleset обнаружено правило masquerade"
         STATUS["nat"]="OK"
     else
-        error "В активном ruleset отсутствует masquerade. Возможные причины: конфиг не загружен, служба nftables не стартовала или ruleset перезаписан."
-        error "Проверьте: systemctl status nftables; systemctl cat nftables; конфиг: ${NFT_CONF_ACTIVE}"
+        error "В активном ruleset отсутствует masquerade. Возможные причины: конфиг не загружен, служба nftables не стартовала или ruleset перезаписан. Проверьте: systemctl status nftables; systemctl cat nftables; конфиг: ${NFT_CONF_ACTIVE}"
         STATUS["nat"]="ERROR"
     fi
 fi
