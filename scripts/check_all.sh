@@ -84,6 +84,7 @@ run_isp_checks() {
     run_ok_fail_check "isp_ip_forward" "net.ipv4.ip_forward = 1" "[[ \"\$(sysctl -n net.ipv4.ip_forward 2>/dev/null || cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 0)\" == '1' ]]"
 
     if check_cmd nft; then
+        info "Проверка NAT смотрит активный ruleset (nft list ruleset), а не только файл конфигурации."
         run_ok_fail_check "isp_nft_nat" "NAT masquerade в nft" "nft list ruleset | grep -qi masquerade"
     else
         run_skip_check "isp_nft_nat" "NAT masquerade в nft" "нет команды nft"
@@ -240,8 +241,8 @@ run_hq_srv_checks() {
         run_ok_fail_check "hq_srv_dns_direct" "nslookup hq-srv.au-team.irpo @127.0.0.1" "nslookup hq-srv.au-team.irpo 127.0.0.1"
         run_ok_fail_check "hq_srv_dns_ptr" "nslookup 192.168.1.1 @127.0.0.1 (PTR)" "nslookup 192.168.1.1 127.0.0.1"
     else
-        run_skip_check "hq_srv_dns_direct" "nslookup hq-srv.au-team.irpo @127.0.0.1" "нет команды nslookup"
-        run_skip_check "hq_srv_dns_ptr" "nslookup 192.168.1.1 @127.0.0.1 (PTR)" "нет команды nslookup"
+        run_skip_check "hq_srv_dns_direct" "nslookup hq-srv.au-team.irpo @127.0.0.1" "нет команды nslookup (установите: apt-get install -y bind-utils)"
+        run_skip_check "hq_srv_dns_ptr" "nslookup 192.168.1.1 @127.0.0.1 (PTR)" "нет команды nslookup (установите: apt-get install -y bind-utils)"
     fi
 }
 
@@ -278,7 +279,7 @@ run_br_srv_checks() {
     if check_cmd nslookup; then
         run_ok_fail_check "br_srv_dns_direct" "nslookup br-srv.au-team.irpo @127.0.0.1" "nslookup br-srv.au-team.irpo 127.0.0.1"
     else
-        run_skip_check "br_srv_dns_direct" "nslookup br-srv.au-team.irpo @127.0.0.1" "нет команды nslookup"
+        run_skip_check "br_srv_dns_direct" "nslookup br-srv.au-team.irpo @127.0.0.1" "нет команды nslookup (установите: apt-get install -y bind-utils)"
     fi
 }
 
@@ -300,12 +301,18 @@ run_hq_cli_checks() {
     if check_cmd nslookup; then
         run_ok_fail_check "hq_cli_dns_name" "Резолв hq-srv.au-team.irpo" "nslookup hq-srv.au-team.irpo"
     else
-        run_skip_check "hq_cli_dns_name" "Резолв hq-srv.au-team.irpo" "нет команды nslookup"
+        run_skip_check "hq_cli_dns_name" "Резолв hq-srv.au-team.irpo" "нет команды nslookup (установите: apt-get install -y bind-utils)"
     fi
 }
 
 run_end_to_end_checks() {
+    local role="${1:-unknown}"
     info "Сквозная проверка (end-to-end)"
+    info "Подсказка: результаты E2E зависят от роли узла, с которого выполняется проверка."
+    if [[ "$role" == "isp" ]]; then
+        info "На ISP адреса 192.168.x.x (LAN офисов) и 10.0.0.1/10.0.0.2 (GRE HQ-RTR↔BR-RTR) недостижимы by design."
+        info "Для осмысленной проверки LAN/GRE запускайте E2E с HQ-RTR, BR-RTR или конечных узлов офисов."
+    fi
 
     local ips=(
         172.16.1.1 172.16.1.2 172.16.2.1 172.16.2.2
@@ -341,7 +348,7 @@ run_end_to_end_checks() {
     else
         local name
         for name in "${names[@]}"; do
-            run_skip_check "e2e_dns_name_${name//./_}" "E2E DNS $name" "нет команды nslookup"
+            run_skip_check "e2e_dns_name_${name//./_}" "E2E DNS $name" "нет команды nslookup (установите: apt-get install -y bind-utils)"
         done
     fi
 }
@@ -469,11 +476,11 @@ main() {
             run_role_checks "$selected_role"
             ;;
         2)
-            run_end_to_end_checks
+            run_end_to_end_checks "$selected_role"
             ;;
         3)
             run_role_checks "$selected_role"
-            run_end_to_end_checks
+            run_end_to_end_checks "$selected_role"
             ;;
         4)
             selected_role="$(select_role_menu)"
