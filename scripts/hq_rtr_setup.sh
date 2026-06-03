@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-# ─── Цветной вывод ─────────────────────────────────────────────────────────────
+# ─── Цветной вывод ────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'
 NC='\033[0m'
 
@@ -21,7 +21,7 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
-# ─── Проверка root ──────────────────────────────────────────────────────────────
+# ─── Проверка root ────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
     error "Скрипт должен быть запущен от имени root (sudo или su -)"
     exit 1
@@ -152,7 +152,7 @@ fi
 
 declare -A STATUS
 
-# ─── 1. Hostname ───────────────────────────────────────────────────────────────
+# ─── 1. Hostname ──────────────────────────────────────────────────────────────
 info "Устанавливаю hostname: ${HOSTNAME_FQDN}"
 hostnamectl set-hostname "$HOSTNAME_FQDN"
 ok "Hostname: ${HOSTNAME_FQDN}"
@@ -353,7 +353,7 @@ WantedBy=multi-user.target
 EOF2
     systemctl daemon-reload
     systemctl enable iptables-restore.service
-    ok "Автозагрузка iptables настроена через systemd (iptables-restore.service)"
+    ok "Автозагрузка iptables настроена ��ерез systemd (iptables-restore.service)"
 
     STATUS["nat"]="OK"
 else
@@ -380,12 +380,17 @@ NM_CONTROLLED=no
 CONFIG_IPV4=yes
 EOF2
 echo "$GRE_TUNNEL_CIDR" > "${GRE_DIR}/ipv4address"
+# Закрепляем multicast и MTU через etcnet (iplink) — применяются при КАЖДОМ подъёме
+# интерфейса, в т. ч. при systemctl restart network. Без multicast OSPF (224.0.0.5)
+# не находит соседей; mtu 1400 + ip ospf mtu-ignore спасают от застревания в ExStart.
+echo "mtu 1400 multicast on" > "${GRE_DIR}/iplink"
 
 # Применяем немедленно с чистым воссозданием
 ip tunnel del gre1 2>/dev/null || true
 ip link del gre1 2>/dev/null || true
 ip tunnel add gre1 mode gre local "$GRE_LOCAL_IP" remote "$BR_WAN_IP" ttl 255
 ip addr add "$GRE_TUNNEL_CIDR" dev gre1
+ip link set gre1 mtu 1400
 ip link set gre1 up
 ip link set gre1 multicast on
 
@@ -397,16 +402,19 @@ info "Настройка systemd-сервиса gre-multicast.service (persist m
 cat > /etc/systemd/system/gre-multicast.service <<'EOF2'
 [Unit]
 Description=Enable multicast on gre1 for OSPF
+# PartOf + After network.service: сервис срабатывает и при systemctl restart network,
+# а не только при загрузке — иначе после рестарта сети gre1 остаётся без multicast.
+PartOf=network.service
 Wants=network.target
-After=network.target
+After=network.target network.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'for i in $(seq 1 30); do ip link show gre1 >/dev/null 2>&1 && break; sleep 1; done; ip link set gre1 multicast on'
+ExecStart=/bin/sh -c 'for i in $(seq 1 30); do ip link show gre1 >/dev/null 2>&1 && break; sleep 1; done; ip link set gre1 mtu 1400; ip link set gre1 multicast on'
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target network.service
 EOF2
 systemctl daemon-reload 2>/dev/null || true
 systemctl enable gre-multicast.service 2>/dev/null || true
@@ -456,10 +464,23 @@ router ospf
 interface gre1
  ip ospf authentication message-digest
  ip ospf message-digest-key 1 md5 ${OSPF_PASS}
+ ip ospf mtu-ignore
 !
 line vty
 !
 EOF2
+    # Drop-in: FRR ждёт появления gre1 и перезапускается после подъёма сети,
+    # иначе OSPF стартует раньше, чем etcnet создал туннель → нет соседства.
+    mkdir -p /etc/systemd/system/frr.service.d
+    cat > /etc/systemd/system/frr.service.d/after-network.conf <<'EOF2'
+[Unit]
+After=network.target network.service gre-multicast.service
+Wants=gre-multicast.service
+
+[Service]
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do ip link show gre1 >/dev/null 2>&1 && break; sleep 1; done'
+EOF2
+    systemctl daemon-reload 2>/dev/null || true
     systemctl enable --now frr 2>/dev/null || service frr restart 2>/dev/null || true
     ok "OSPF (FRR) настроен, router-id=${OSPF_ROUTER_ID}"
     STATUS["ospf"]="OK"
