@@ -265,14 +265,28 @@ if ! command -v nft &>/dev/null; then
     }
 fi
 
-NFT_CONF="/etc/nftables/nftables.nft"
-# На Альт сервер конфиг может лежать в /etc/nftables/
-mkdir -p /etc/nftables
-# Также создаём /etc/nftables.conf как симлинк или копию
-[[ -f /etc/nftables.conf ]] && cp /etc/nftables.conf /etc/nftables.conf.bak
-[[ -f "$NFT_CONF" ]] && cp "$NFT_CONF" "${NFT_CONF}.bak"
+NFT_CONF_DEFAULT="/etc/nftables/nftables.nft"
+NFT_CONF_FALLBACK="/etc/nftables.conf"
+NFT_CONF_ACTIVE="$NFT_CONF_DEFAULT"
 
-cat > "$NFT_CONF" <<EOF2
+if command -v systemctl &>/dev/null && systemctl cat nftables >/dev/null 2>&1; then
+    NFT_CONF_FROM_UNIT="$(systemctl cat nftables 2>/dev/null | sed -nE 's/^[[:space:]]*ExecStart=.*-f[[:space:]]+([^[:space:]]+).*/\1/p' | head -n1 | tr -d "\"'")"
+    if [[ -n "$NFT_CONF_FROM_UNIT" ]]; then
+        NFT_CONF_ACTIVE="$NFT_CONF_FROM_UNIT"
+    fi
+fi
+
+info "Конфигурация nftables будет записана в: ${NFT_CONF_ACTIVE}"
+
+mkdir -p /etc/nftables
+mkdir -p "$(dirname "$NFT_CONF_ACTIVE")"
+[[ -f "$NFT_CONF_FALLBACK" ]] && cp "$NFT_CONF_FALLBACK" "${NFT_CONF_FALLBACK}.bak"
+[[ -f "$NFT_CONF_DEFAULT" ]] && cp "$NFT_CONF_DEFAULT" "${NFT_CONF_DEFAULT}.bak"
+[[ -f "$NFT_CONF_ACTIVE" ]] && cp "$NFT_CONF_ACTIVE" "${NFT_CONF_ACTIVE}.bak"
+
+NFT_TMP_CONF="$(mktemp /tmp/isp-nftables.XXXXXX.nft)"
+
+cat > "$NFT_TMP_CONF" <<EOF2
 #!/usr/sbin/nft -f
 # nftables конфигурация ISP (Альт сервер) — демоэкзамен 09.02.06 (2026)
 # NAT: masquerade для HQ-RTR и BR-RTR в сторону WAN (Интернет)
@@ -296,29 +310,72 @@ table ip filter {
 }
 EOF2
 
-# На Альт сервер конфиг может читаться из /etc/nftables.conf
-cp "$NFT_CONF" /etc/nftables.conf
-
-# Включаем и применяем
-if systemctl enable --now nftables 2>/dev/null; then
-    nft -f "$NFT_CONF"
-    ok "nftables запущен и активирован (автозапуск включён)"
-    STATUS["nat"]="OK"
+if nft -c -f "$NFT_TMP_CONF"; then
+    ok "Синтаксис nftables конфигурации корректен"
 else
-    # Применяем правила напрямую и добавляем в автозапуск вручную
-    if nft -f "$NFT_CONF"; then
+    error "Синтаксическая проверка nftables не пройдена (nft -c -f $NFT_TMP_CONF)"
+    STATUS["nat"]="ERROR"
+fi
+
+if [[ "${STATUS[nat]:-}" != "ERROR" ]]; then
+    install -m 644 "$NFT_TMP_CONF" "$NFT_CONF_ACTIVE"
+    if [[ "$NFT_CONF_ACTIVE" != "$NFT_CONF_DEFAULT" ]]; then
+        install -m 644 "$NFT_TMP_CONF" "$NFT_CONF_DEFAULT"
+    fi
+    install -m 644 "$NFT_TMP_CONF" "$NFT_CONF_FALLBACK"
+    info "Конфиг nftables обновлён: ${NFT_CONF_ACTIVE} (резерв: ${NFT_CONF_FALLBACK})"
+fi
+
+rm -f "$NFT_TMP_CONF"
+
+NAT_APPLIED=0
+NFT_SYSTEMD_ENABLED=0
+NFT_SYSTEMD_ACTIVE=0
+if [[ "${STATUS[nat]:-}" != "ERROR" ]] && command -v systemctl &>/dev/null && systemctl cat nftables >/dev/null 2>&1; then
+    if systemctl enable nftables 2>/dev/null; then
+        ok "Служба nftables включена в автозагрузку"
+        NFT_SYSTEMD_ENABLED=1
+    else
+        warn "Не удалось включить nftables в автозагрузку через systemd"
+    fi
+
+    if systemctl restart nftables 2>/dev/null || systemctl start nftables 2>/dev/null; then
+        ok "nftables применён через systemd"
+        NAT_APPLIED=1
+        NFT_SYSTEMD_ACTIVE=1
+    else
+        warn "Не удалось применить nftables через systemd, пробую nft -f напрямую"
+    fi
+fi
+
+if [[ "${STATUS[nat]:-}" != "ERROR" ]] && [[ "$NAT_APPLIED" -eq 0 ]]; then
+    if nft -f "$NFT_CONF_ACTIVE"; then
         ok "nftables правила применены напрямую"
-        # Для Альт сервер добавляем в /etc/rc.d/rc.local как резерв
-        if [[ -f /etc/rc.d/rc.local ]]; then
-            if ! grep -q "nft -f" /etc/rc.d/rc.local; then
-                echo "nft -f ${NFT_CONF}" >> /etc/rc.d/rc.local
-                chmod +x /etc/rc.d/rc.local
-                info "Добавлен автозапуск nftables в /etc/rc.d/rc.local"
-            fi
-        fi
+        NAT_APPLIED=1
+    else
+        error "Ошибка применения nftables (nft -f ${NFT_CONF_ACTIVE})"
+        STATUS["nat"]="ERROR"
+    fi
+fi
+
+if [[ "${STATUS[nat]:-}" != "ERROR" ]] && [[ "$NFT_SYSTEMD_ENABLED" -eq 0 || "$NFT_SYSTEMD_ACTIVE" -eq 0 ]]; then
+    RC_LOCAL="/etc/rc.d/rc.local"
+    RC_LOCAL_LINE="nft -f ${NFT_CONF_ACTIVE}"
+    mkdir -p /etc/rc.d
+    [[ -f "$RC_LOCAL" ]] || echo "#!/bin/bash" > "$RC_LOCAL"
+    if ! grep -Fqx "$RC_LOCAL_LINE" "$RC_LOCAL" 2>/dev/null; then
+        echo "$RC_LOCAL_LINE" >> "$RC_LOCAL"
+        info "Добавлен фолбэк автозапуска nftables в ${RC_LOCAL}"
+    fi
+    chmod +x "$RC_LOCAL"
+fi
+
+if [[ "${STATUS[nat]:-}" != "ERROR" ]] && [[ "$NAT_APPLIED" -eq 1 ]]; then
+    if nft list ruleset | grep -qi masquerade; then
+        ok "В активном ruleset обнаружено правило masquerade"
         STATUS["nat"]="OK"
     else
-        error "Ошибка применения nftables"
+        error "В активном ruleset отсутствует masquerade. Проверьте: systemctl status nftables; systemctl cat nftables; конфиг: ${NFT_CONF_ACTIVE}"
         STATUS["nat"]="ERROR"
     fi
 fi
