@@ -270,7 +270,10 @@ NFT_CONF_FALLBACK="/etc/nftables.conf"
 NFT_CONF_ACTIVE="$NFT_CONF_DEFAULT"
 
 if command -v systemctl &>/dev/null && systemctl cat nftables >/dev/null 2>&1; then
-    NFT_CONF_FROM_UNIT="$(systemctl cat nftables 2>/dev/null | sed -nE 's/^[[:space:]]*ExecStart=.*-f[[:space:]]+([^[:space:]]+).*/\1/p' | head -n1 | tr -d "\"'")"
+    NFT_CONF_FROM_UNIT="$(systemctl show -p ExecStart --value nftables 2>/dev/null | sed -nE 's/.*[[:space:]]-f[[:space:]]+([^[:space:];]+).*/\1/p' | head -n1 | tr -d "\"'")"
+    if [[ -z "$NFT_CONF_FROM_UNIT" ]]; then
+        NFT_CONF_FROM_UNIT="$(systemctl cat nftables 2>/dev/null | sed -nE 's/^[[:space:]]*ExecStart=.*-f[[:space:]]+([^[:space:]]+).*/\1/p' | head -n1 | tr -d "\"'")"
+    fi
     if [[ -n "$NFT_CONF_FROM_UNIT" ]]; then
         NFT_CONF_ACTIVE="$NFT_CONF_FROM_UNIT"
     fi
@@ -363,10 +366,9 @@ if [[ "${STATUS[nat]:-}" != "ERROR" ]] && [[ "$NFT_SYSTEMD_ENABLED" -eq 0 || "$N
     RC_LOCAL_LINE="nft -f ${NFT_CONF_ACTIVE}"
     mkdir -p /etc/rc.d
     [[ -f "$RC_LOCAL" ]] || echo "#!/bin/bash" > "$RC_LOCAL"
-    if ! grep -Fqx "$RC_LOCAL_LINE" "$RC_LOCAL" 2>/dev/null; then
-        echo "$RC_LOCAL_LINE" >> "$RC_LOCAL"
-        info "Добавлен фолбэк автозапуска nftables в ${RC_LOCAL}"
-    fi
+    sed -i '\|nft -f |d' "$RC_LOCAL"
+    echo "$RC_LOCAL_LINE" >> "$RC_LOCAL"
+    info "Добавлен фолбэк автозапуска nftables в ${RC_LOCAL}"
     chmod +x "$RC_LOCAL"
 fi
 
@@ -375,7 +377,8 @@ if [[ "${STATUS[nat]:-}" != "ERROR" ]] && [[ "$NAT_APPLIED" -eq 1 ]]; then
         ok "В активном ruleset обнаружено правило masquerade"
         STATUS["nat"]="OK"
     else
-        error "В активном ruleset отсутствует masquerade. Проверьте: systemctl status nftables; systemctl cat nftables; конфиг: ${NFT_CONF_ACTIVE}"
+        error "В активном ruleset отсутствует masquerade. Возможные причины: конфиг не загружен, служба nftables не стартовала или ruleset перезаписан."
+        error "Проверьте: systemctl status nftables; systemctl cat nftables; конфиг: ${NFT_CONF_ACTIVE}"
         STATUS["nat"]="ERROR"
     fi
 fi
