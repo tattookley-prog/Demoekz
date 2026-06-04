@@ -125,7 +125,8 @@ IP forwarding, NAT через nftables (masquerade для HQ-RTR и BR-RTR).
 sudo bash scripts/hq_rtr_setup.sh
 ```
 **Что делает:** hostname, IP через etcnet, VLAN 100/200, GRE-туннель `gre1`,
-OSPF через FRR, NAT через iptables (MASQUERADE), правила FORWARD и MSS clamp
+OSPF через FRR (на `gre1` ускоренные таймеры hello/dead 1/4 для быстрого
+восстановления соседства после `systemctl restart network`), NAT через iptables (MASQUERADE), правила FORWARD и MSS clamp
 (задание №8 — доступ в Интернет для всех устройств офиса), DHCP для HQ-CLI,
 автозагрузка iptables через systemd (`iptables-restore.service`), пользователь `net_admin`.
 
@@ -133,8 +134,9 @@ OSPF через FRR, NAT через iptables (MASQUERADE), правила FORWAR
 ```bash
 sudo bash scripts/br_rtr_setup.sh
 ```
-**Что делает:** hostname, IP (nmcli), GRE-туннель `gre1`, OSPF через FRR,
-NAT через iptables, пользователь `net_admin`.
+**Что делает:** hostname, IP (nmcli), GRE-туннель `gre1`, OSPF через FRR
+(на `gre1` ускоренные таймеры hello/dead 1/4 для быстрого восстановления
+соседства после `systemctl restart network`), NAT через iptables, пользователь `net_admin`.
 
 #### `scripts/hq_srv_setup.sh` — настройка HQ-SRV
 ```bash
