@@ -61,6 +61,9 @@ echo "--- LAN ---"
 read -rp "IP/маска LAN [192.168.3.1/28]: " LAN_IP_CIDR
 LAN_IP_CIDR="${LAN_IP_CIDR:-192.168.3.1/28}"
 
+read -rp "Сеть LAN (BR-SRV) для OSPF [192.168.3.0/28]: " LAN_NET
+LAN_NET="${LAN_NET:-192.168.3.0/28}"
+
 echo
 echo "--- GRE / OSPF ---"
 read -rp "GRE local IP [${WAN_IP}]: " GRE_LOCAL_IP
@@ -85,9 +88,9 @@ echo
 info "Параметры конфигурации:"
 echo "  Hostname:      ${HOSTNAME_FQDN}"
 echo "  WAN:           ${WAN_IFACE} = ${WAN_IP_CIDR}, шлюз ${WAN_GW}"
-echo "  LAN:           ${LAN_IFACE} = ${LAN_IP_CIDR}"
+echo "  LAN:           ${LAN_IFACE} = ${LAN_IP_CIDR}, OSPF ${LAN_NET}"
 echo "  GRE:           local=${GRE_LOCAL_IP}, remote=${HQ_WAN_IP}, tunnel=${GRE_TUNNEL_CIDR}"
-echo "  OSPF:          router-id=${OSPF_ROUTER_ID}, password=${OSPF_PASS}"
+echo "  OSPF:          router-id=${OSPF_ROUTER_ID}, network ${GRE_NET} + ${LAN_NET}, password=${OSPF_PASS}"
 echo "  Часовой пояс:  ${TZ_NAME}"
 echo "  DNS-домен:     ${DOMAIN}"
 echo
@@ -353,6 +356,7 @@ hostname ${HOSTNAME_FQDN}
 router ospf
  ospf router-id ${OSPF_ROUTER_ID}
  network ${GRE_NET} area 0
+ network ${LAN_NET} area 0
  area 0 authentication message-digest
  passive-interface default
  no passive-interface gre1
@@ -400,7 +404,7 @@ else
 fi
 STATUS["net_admin"]="OK"
 
-# ─── Итоговый статус ──────────────────────────────────────────────────────────
+# ─── Итоговый статус ───────────────────────────────────────────────────────────
 echo
 echo "============================================================"
 echo "  Итог настройки BR-RTR (Альт Сервер — etcnet)"
@@ -420,7 +424,7 @@ info "Hostname: ${HOSTNAME_FQDN}"
 info "WAN:      ${WAN_IFACE} (${WAN_IP_CIDR}, шлюз ${WAN_GW})"
 info "LAN:      ${LAN_IFACE} (${LAN_IP_CIDR})"
 info "GRE:      gre1 ${GRE_TUNNEL_CIDR} → ${HQ_WAN_IP}"
-info "OSPF:     FRR, router-id=${OSPF_ROUTER_ID}, сеть ${GRE_NET}"
+info "OSPF:     FRR, router-id=${OSPF_ROUTER_ID}, сети ${GRE_NET} + ${LAN_NET}"
 echo
 warn "Конфиги etcnet: /etc/net/ifaces/ — применяются при systemctl restart network"
 warn "iptables правила: /etc/iptables/rules.v4 (автозагрузка: iptables-restore.service)"
