@@ -472,13 +472,15 @@ interface gre1
 line vty
 !
 EOF2
-    # Drop-in: FRR ждёт появления gre1 и перезапускается после подъёма сети,
-    # иначе OSPF стартует раньше, чем etcnet создал туннель → нет соседства.
+    # Drop-in: FRR ждёт появления gre1 и перезапускается вместе с сетью
+    # (PartOf=network.service), чтобы ospfd переинициализировался на новом
+    # gre1 и не держал протухший сокет; иначе OSPF может не поднять соседство.
     # Таймеры hello/dead на gre1 снижены до 1/4 с для быстрого восстановления
     # соседства после systemctl restart network (вместо стандартных ~40 с).
     mkdir -p /etc/systemd/system/frr.service.d
     cat > /etc/systemd/system/frr.service.d/after-network.conf <<'EOF2'
 [Unit]
+PartOf=network.service
 After=network.target network.service gre-multicast.service
 Wants=gre-multicast.service
 
