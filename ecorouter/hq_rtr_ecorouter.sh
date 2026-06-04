@@ -404,6 +404,7 @@ cmd "end"
 cmd "write memory"
 
 send_user "\n[OK] Настройка HQ-RTR завершена успешно.\n"
+# Ctrl+O (0x0f) — штатный выход из qm terminal в Proxmox.
 send "\x0f"
 EXPECT_HQ
 
