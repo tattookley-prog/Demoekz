@@ -424,6 +424,9 @@ STATUS["gre_multicast"]="OK"
 
 # ─── 11. OSPF через FRR (задание 7) ───────────────────────────────────────────
 info "[Задание 7] Настройка OSPF через FRR..."
+# Graceful Restart (NSF) + helper + BFD нужны для устойчивости при
+# systemctl restart network: маршруты соседа сохраняются, а не только быстрее
+# пересобирается adjacency.
 
 if ! command -v vtysh &>/dev/null; then
     info "Установка FRR..."
@@ -438,11 +441,21 @@ if command -v vtysh &>/dev/null || [[ -f /etc/frr/daemons ]]; then
     if [[ -f "$FRR_DAEMONS" ]]; then
         cp "$FRR_DAEMONS" "${FRR_DAEMONS}.bak"
         sed -i 's/^ospfd=no/ospfd=yes/' "$FRR_DAEMONS"
+        sed -i 's/^bfdd=no/bfdd=yes/' "$FRR_DAEMONS"
         ok "ospfd включён в $FRR_DAEMONS"
+        ok "bfdd включён в $FRR_DAEMONS"
     fi
 
     FRR_OSPF="/etc/frr/frr.conf"
     [[ -f "$FRR_OSPF" ]] && cp "$FRR_OSPF" "${FRR_OSPF}.bak"
+    GRE_LOCAL_ONLY="${GRE_TUNNEL_CIDR%/*}"
+    GRE_PREFIX="${GRE_LOCAL_ONLY%.*}"
+    GRE_LAST="${GRE_LOCAL_ONLY##*.}"
+    if (( GRE_LAST % 2 == 1 )); then
+        GRE_PEER_IP="${GRE_PREFIX}.$((GRE_LAST + 1))"
+    else
+        GRE_PEER_IP="${GRE_PREFIX}.$((GRE_LAST - 1))"
+    fi
 
     cat > "$FRR_OSPF" <<EOF2
 !
@@ -454,6 +467,9 @@ hostname ${HOSTNAME_FQDN}
 !
 router ospf
  ospf router-id ${OSPF_ROUTER_ID}
+ capability opaque
+ graceful-restart grace-period 120
+ graceful-restart helper enable
  network ${GRE_NET} area 0
  network ${VLAN100_NET} area 0
  network ${VLAN200_NET} area 0
@@ -464,10 +480,17 @@ router ospf
 interface gre1
  ip ospf authentication message-digest
  ip ospf message-digest-key 1 md5 ${OSPF_PASS}
+ ip ospf bfd
  ip ospf mtu-ignore
  ip ospf hello-interval 1
  ip ospf dead-interval 4
  ip ospf retransmit-interval 3
+!
+bfd
+ peer ${GRE_PEER_IP}
+  receive-interval 300
+  transmit-interval 300
+  detect-multiplier 3
 !
 line vty
 !
