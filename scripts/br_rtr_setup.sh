@@ -162,6 +162,16 @@ EOF2
     echo "$ip" > "${dir}/ipv4address"
 }
 
+# ─── Вспомогательная функция: включение демонов FRR ───────────────────────────
+enable_frr_daemon() {
+    local daemon="$1" file="$2"
+    if grep -Eq "^[[:space:]]*#?[[:space:]]*${daemon}=" "$file" 2>/dev/null; then
+        sed -i -E "s|^[[:space:]]*#?[[:space:]]*${daemon}=.*|${daemon}=yes|" "$file"
+    else
+        echo "${daemon}=yes" >> "$file"
+    fi
+}
+
 # ─── 4. WAN через etcnet (задание 1) ──────────────────────────────────────────
 info "[Задание 1] Настройка WAN ($WAN_IFACE): $WAN_IP_CIDR, шлюз $WAN_GW"
 etcnet_static "$WAN_IFACE" "$WAN_IP_CIDR"
@@ -337,15 +347,16 @@ if ! command -v vtysh &>/dev/null; then
     }
 fi
 
-if command -v vtysh &>/dev/null || [[ -f /etc/frr/daemons ]]; then
+if command -v vtysh &>/dev/null || [[ -d /etc/frr ]]; then
+    mkdir -p /etc/frr
+
     FRR_DAEMONS="/etc/frr/daemons"
-    if [[ -f "$FRR_DAEMONS" ]]; then
-        cp "$FRR_DAEMONS" "${FRR_DAEMONS}.bak"
-        sed -i 's/^ospfd=no/ospfd=yes/' "$FRR_DAEMONS"
-        sed -i 's/^bfdd=no/bfdd=yes/' "$FRR_DAEMONS"
-        ok "ospfd включён в $FRR_DAEMONS"
-        ok "bfdd включён в $FRR_DAEMONS"
-    fi
+    [[ -f "$FRR_DAEMONS" ]] && cp "$FRR_DAEMONS" "${FRR_DAEMONS}.bak"
+    touch "$FRR_DAEMONS"
+    enable_frr_daemon zebra "$FRR_DAEMONS"
+    enable_frr_daemon ospfd "$FRR_DAEMONS"
+    enable_frr_daemon bfdd "$FRR_DAEMONS"
+    ok "FRR daemons включены в $FRR_DAEMONS (zebra=yes, ospfd=yes, bfdd=yes)"
 
     FRR_OSPF="/etc/frr/frr.conf"
     [[ -f "$FRR_OSPF" ]] && cp "$FRR_OSPF" "${FRR_OSPF}.bak"
@@ -395,6 +406,11 @@ bfd
 line vty
 !
 EOF2
+
+    # Права важны: на некоторых сборках FRR не стартует, если конфиги не читаются пользователем frr.
+    chown -R frr:frr /etc/frr 2>/dev/null || true
+    chmod 640 "$FRR_OSPF" "$FRR_DAEMONS" 2>/dev/null || true
+
     # Drop-in: FRR ждёт появления gre1 и перезапускается вместе с сетью
     # (PartOf=network.service), чтобы ospfd переинициализировался на новом
     # gre1 и не держал протухший сокет; иначе OSPF может не поднять соседство.
@@ -408,12 +424,31 @@ After=network.target network.service gre-multicast.service
 Wants=gre-multicast.service
 
 [Service]
-ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do ip link show gre1 >/dev/null 2>&1 && break; sleep 1; done'
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do ip link show gre1 >/dev/null 2>&1 && break; sleep 1; done; ip link set gre1 mtu 1400 multicast on || true'
 EOF2
+
+    FRR_STARTED=0
     systemctl daemon-reload 2>/dev/null || true
-    systemctl enable --now frr 2>/dev/null || service frr restart 2>/dev/null || true
-    ok "OSPF (FRR) настроен, router-id=${OSPF_ROUTER_ID}"
-    STATUS["ospf"]="OK"
+    systemctl unmask frr 2>/dev/null || true
+    systemctl enable frr 2>/dev/null || true
+
+    if systemctl restart frr 2>/dev/null && systemctl is-active --quiet frr 2>/dev/null; then
+        FRR_STARTED=1
+    elif service frr restart 2>/dev/null; then
+        if systemctl is-active --quiet frr 2>/dev/null || pgrep -x zebra >/dev/null 2>&1 || pgrep -x ospfd >/dev/null 2>&1; then
+            FRR_STARTED=1
+        fi
+    fi
+
+    if [[ "$FRR_STARTED" -eq 1 ]]; then
+        ok "OSPF (FRR) настроен и сервис frr активен, router-id=${OSPF_ROUTER_ID}"
+        STATUS["ospf"]="OK"
+    else
+        error "FRR не запустился: проверьте вывод ниже и /etc/frr/frr.conf"
+        systemctl status frr --no-pager -l 2>/dev/null || true
+        journalctl -u frr -n 50 --no-pager 2>/dev/null || true
+        STATUS["ospf"]="ERROR"
+    fi
 else
     warn "FRR не найден, пропускаю настройку OSPF"
     STATUS["ospf"]="SKIP"
@@ -434,7 +469,7 @@ else
 fi
 STATUS["net_admin"]="OK"
 
-# ─── Итоговый статус ───────────────────────────────────────────────────────────
+# ─── Итоговый статус ──────────────────────────────────────────────────────────
 echo
 echo "============================================================"
 echo "  Итог настройки BR-RTR (Альт Сервер — etcnet)"
@@ -456,6 +491,10 @@ info "LAN:      ${LAN_IFACE} (${LAN_IP_CIDR})"
 info "GRE:      gre1 ${GRE_TUNNEL_CIDR} → ${HQ_WAN_IP}"
 info "OSPF:     FRR, router-id=${OSPF_ROUTER_ID}, сети ${GRE_NET} + ${LAN_NET}"
 echo
+warn "Если check_all.sh всё ещё показывает FAIL по OSPF соседям, проверьте на BR-RTR:"
+warn "  systemctl status frr --no-pager -l"
+warn "  vtysh -c 'show ip ospf neighbor'"
+warn "  ping -c1 10.0.0.1"
 warn "Конфиги etcnet: /etc/net/ifaces/ — применяются при systemctl restart network"
 warn "iptables правила: /etc/iptables/rules.v4 (автозагрузка: iptables-restore.service)"
 warn "После перезагрузки всё должно подняться автоматически!"
