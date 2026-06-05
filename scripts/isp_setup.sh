@@ -112,10 +112,10 @@ if [[ ! "${CONFIRM,,}" =~ ^y ]]; then
     exit 0
 fi
 
-# ─── Отслеживание статуса операций ───────────────────────────────────────────
+# ─── Отслеживание статуса операций ──────────────────────────────────────────
 declare -A STATUS
 
-# ─── 1. Hostname ──────────────────────────────────────────────────────────────
+# ─── 1. Hostname ─────────────────────────────────────────────────────────────
 info "Устанавливаю hostname: ${HOSTNAME_FQDN}"
 hostnamectl set-hostname "$HOSTNAME_FQDN"
 echo "$HOSTNAME_FQDN" > /etc/hostname
@@ -235,7 +235,7 @@ else
     warn "Не удалось перезапустить network — конфиги etcnet применятся после перезагрузки"
 fi
 
-# ─── 4. IP forwarding ─────────────────────────────────────────────────────────
+# ─── 4. IP forwarding ────────────────────────────────────────────────────────
 info "Включение IP forwarding..."
 SYSCTL_CONF="/etc/sysctl.conf"
 if grep -q '^#*\s*net\.ipv4\.ip_forward' "$SYSCTL_CONF"; then
@@ -328,29 +328,11 @@ fi
 
 rm -f "$NFT_TMP_CONF"
 
+# ── Применяем правила в активный ruleset прямо сейчас ──
 NAT_APPLIED=0
-NFT_SYSTEMD_ENABLED=0
-NFT_SYSTEMD_ACTIVE=0
-if [[ "${STATUS[nat]:-}" != "ERROR" ]] && command -v systemctl &>/dev/null && systemctl cat nftables >/dev/null 2>&1; then
-    if systemctl enable nftables 2>/dev/null; then
-        ok "Служба nftables включена в автозагрузку"
-        NFT_SYSTEMD_ENABLED=1
-    else
-        warn "Не удалось включить nftables в автозагрузку через systemd"
-    fi
-
-    if systemctl restart nftables 2>/dev/null || systemctl start nftables 2>/dev/null; then
-        ok "nftables применён через systemd"
-        NAT_APPLIED=1
-        NFT_SYSTEMD_ACTIVE=1
-    else
-        warn "Не удалось применить nftables через systemd, пробую nft -f напрямую"
-    fi
-fi
-
-if [[ "${STATUS[nat]:-}" != "ERROR" ]] && [[ "$NAT_APPLIED" -eq 0 ]]; then
+if [[ "${STATUS[nat]:-}" != "ERROR" ]]; then
     if nft -f "$NFT_CONF_ACTIVE"; then
-        ok "nftables правила применены напрямую"
+        ok "nftables правила применены (nft -f ${NFT_CONF_ACTIVE})"
         NAT_APPLIED=1
     else
         error "Ошибка применения nftables (nft -f ${NFT_CONF_ACTIVE})"
@@ -358,24 +340,55 @@ if [[ "${STATUS[nat]:-}" != "ERROR" ]] && [[ "$NAT_APPLIED" -eq 0 ]]; then
     fi
 fi
 
-if [[ "${STATUS[nat]:-}" != "ERROR" ]] && [[ "$NFT_SYSTEMD_ENABLED" -eq 0 || "$NFT_SYSTEMD_ACTIVE" -eq 0 ]]; then
-    RC_LOCAL="/etc/rc.d/rc.local"
-    RC_LOCAL_LINE="nft -f ${NFT_CONF_ACTIVE}"
-    mkdir -p /etc/rc.d
-    [[ -f "$RC_LOCAL" ]] || echo "#!/bin/bash" > "$RC_LOCAL"
-    if ! grep -Fqx "$RC_LOCAL_LINE" "$RC_LOCAL" 2>/dev/null; then
-        echo "$RC_LOCAL_LINE" >> "$RC_LOCAL"
-        info "Добавлен фолбэк автозапуска nftables в ${RC_LOCAL}"
+# ── Persistence: выделенный systemd-юнит isp-nat.service ──────────────────────
+# Не полагаемся на штатный nftables.service: на Альт сервер он может быть НЕ
+# включён в автозагрузку либо грузить ДРУГОЙ файл конфигурации — из-за этого
+# после reboot правило masquerade пропадало (FAIL в check_all.sh).
+# Собственный oneshot-юнит гарантированно применяет правила при каждой загрузке
+# (после поднятия сети) и сохраняет их активными (RemainAfterExit=yes).
+if [[ "${STATUS[nat]:-}" != "ERROR" ]] && command -v systemctl &>/dev/null; then
+    ISP_NAT_SERVICE="/etc/systemd/system/isp-nat.service"
+    [[ -f "$ISP_NAT_SERVICE" ]] && cp "$ISP_NAT_SERVICE" "${ISP_NAT_SERVICE}.bak"
+
+    NFT_BIN="$(command -v nft || echo /usr/sbin/nft)"
+
+    cat > "$ISP_NAT_SERVICE" <<EOF2
+[Unit]
+Description=ISP NAT masquerade (nftables) — демоэкзамен 09.02.06 (2026)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${NFT_BIN} -f ${NFT_CONF_ACTIVE}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF2
+
+    systemctl daemon-reload 2>/dev/null || true
+    if systemctl enable --now isp-nat.service 2>/dev/null; then
+        ok "Сервис isp-nat.service включён в автозагрузку и запущен (persistence после reboot)"
+    else
+        warn "Не удалось включить isp-nat.service — проверьте: systemctl status isp-nat"
     fi
-    chmod +x "$RC_LOCAL"
+
+    # Штатный nftables.service тоже включаем (если присутствует) — как доп. страховку.
+    if systemctl cat nftables >/dev/null 2>&1; then
+        if systemctl enable nftables 2>/dev/null; then
+            info "Штатный nftables.service также включён в автозагрузку"
+        fi
+    fi
 fi
 
+# ── Проверка: masquerade присутствует в активном ruleset ──
 if [[ "${STATUS[nat]:-}" != "ERROR" ]] && [[ "$NAT_APPLIED" -eq 1 ]]; then
     if nft list ruleset | grep -qi masquerade; then
         ok "В активном ruleset обнаружено правило masquerade"
         STATUS["nat"]="OK"
     else
-        error "В активном ruleset отсутствует masquerade. Проверьте: systemctl status nftables; systemctl cat nftables; конфиг: ${NFT_CONF_ACTIVE}"
+        error "В активном ruleset отсутствует masquerade. Проверьте: systemctl status isp-nat; конфиг: ${NFT_CONF_ACTIVE}"
         STATUS["nat"]="ERROR"
     fi
 fi
@@ -456,4 +469,4 @@ info "→ HQ-RTR: $HQ_IFACE = $HQ_IP, NAT $HQ_NAT_NET"
 info "→ BR-RTR: $BR_IFACE = $BR_IP, NAT $BR_NAT_NET"
 info ""
 warn "Конфиги etcnet: /etc/net/ifaces/ — применятся при перезапуске сети"
-warn "nftables правила сохранены в: $NFT_CONF"
+warn "nftables правила сохранены в: $NFT_CONF_ACTIVE (автозагрузка: isp-nat.service)"
