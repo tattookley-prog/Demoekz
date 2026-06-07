@@ -172,6 +172,15 @@ enable_frr_daemon() {
     fi
 }
 
+set_frr_daemon_state() {
+    local daemon="$1" state="$2" file="$3"
+    if grep -Eq "^[[:space:]]*#?[[:space:]]*${daemon}=" "$file" 2>/dev/null; then
+        sed -i -E "s|^[[:space:]]*#?[[:space:]]*${daemon}=.*|${daemon}=${state}|" "$file"
+    else
+        echo "${daemon}=${state}" >> "$file"
+    fi
+}
+
 # ─── 4. WAN через etcnet (задание 1) ──────────────────────────────────────────
 info "[Задание 1] Настройка WAN ($WAN_IFACE): $WAN_IP_CIDR, шлюз $WAN_GW"
 etcnet_static "$WAN_IFACE" "$WAN_IP_CIDR"
@@ -339,15 +348,43 @@ info "[Задание 7] Настройка OSPF через FRR..."
 # systemctl restart network: маршруты соседа сохраняются, а не только быстрее
 # пересобирается adjacency.
 
-if ! command -v vtysh &>/dev/null; then
-    info "Установка FRR..."
-    apt-get install -y frr 2>/dev/null || {
-        error "Не удалось установить frr"
-        STATUS["ospf"]="ERROR"
-    }
+FRR_READY=0
+if command -v vtysh &>/dev/null || rpm -q frr &>/dev/null; then
+    FRR_READY=1
+else
+    info "FRR не найден, пробую офлайн-установку..."
+    OFFLINE_FRR_DIR=""
+    for dir in /root/pkgs /root/pkgs/br-rtr /tmp/offline_pkgs/br-rtr; do
+        if compgen -G "${dir}/*.rpm" >/dev/null 2>&1; then
+            OFFLINE_FRR_DIR="$dir"
+            break
+        fi
+    done
+
+    if [[ -n "$OFFLINE_FRR_DIR" ]]; then
+        info "Пробую установить FRR из локальных пакетов: ${OFFLINE_FRR_DIR}"
+        apt-get install -y "${OFFLINE_FRR_DIR}"/*.rpm >/dev/null 2>&1 || \
+        rpm -Uvh --nodeps "${OFFLINE_FRR_DIR}"/*.rpm >/dev/null 2>&1 || true
+    else
+        warn "Локальные .rpm для FRR не найдены (/root/pkgs, /root/pkgs/br-rtr, /tmp/offline_pkgs/br-rtr)"
+    fi
+
+    if command -v vtysh &>/dev/null || rpm -q frr &>/dev/null; then
+        FRR_READY=1
+    else
+        info "Пробую установить FRR из сетевого репозитория..."
+        apt-get install -y frr >/dev/null 2>&1 || true
+        if command -v vtysh &>/dev/null || rpm -q frr &>/dev/null; then
+            FRR_READY=1
+        fi
+    fi
 fi
 
-if command -v vtysh &>/dev/null || [[ -d /etc/frr ]]; then
+if [[ "$FRR_READY" -eq 0 ]]; then
+    error "Не удалось установить FRR (нет vtysh и пакета frr). Проверьте офлайн-пакеты в /root/pkgs или доступ к репозиторию."
+    STATUS["ospf"]="ERROR"
+    STATUS["ospf_neighbor"]="SKIP"
+else
     mkdir -p /etc/frr
 
     FRR_DAEMONS="/etc/frr/daemons"
@@ -355,8 +392,16 @@ if command -v vtysh &>/dev/null || [[ -d /etc/frr ]]; then
     touch "$FRR_DAEMONS"
     enable_frr_daemon zebra "$FRR_DAEMONS"
     enable_frr_daemon ospfd "$FRR_DAEMONS"
-    enable_frr_daemon bfdd "$FRR_DAEMONS"
-    ok "FRR daemons включены в $FRR_DAEMONS (zebra=yes, ospfd=yes, bfdd=yes)"
+    BFDD_AVAILABLE=0
+    if [[ -x /usr/lib/frr/bfdd || -x /usr/lib64/frr/bfdd || -x /usr/sbin/bfdd ]] || command -v bfdd &>/dev/null; then
+        BFDD_AVAILABLE=1
+        set_frr_daemon_state bfdd yes "$FRR_DAEMONS"
+        ok "FRR daemons включены: zebra=yes, ospfd=yes, bfdd=yes"
+    else
+        set_frr_daemon_state bfdd no "$FRR_DAEMONS"
+        warn "bfdd не найден в системе — запускаю OSPF без BFD"
+        ok "FRR daemons включены: zebra=yes, ospfd=yes, bfdd=no"
+    fi
 
     FRR_OSPF="/etc/frr/frr.conf"
     [[ -f "$FRR_OSPF" ]] && cp "$FRR_OSPF" "${FRR_OSPF}.bak"
@@ -367,6 +412,11 @@ if command -v vtysh &>/dev/null || [[ -d /etc/frr ]]; then
         GRE_PEER_IP="${GRE_PREFIX}.$((GRE_LAST + 1))"
     else
         GRE_PEER_IP="${GRE_PREFIX}.$((GRE_LAST - 1))"
+    fi
+
+    OSPF_BFD_LINE=""
+    if [[ "$BFDD_AVAILABLE" -eq 1 ]]; then
+        OSPF_BFD_LINE=" ip ospf bfd"
     fi
 
     cat > "$FRR_OSPF" <<EOF2
@@ -391,25 +441,39 @@ router ospf
 interface gre1
  ip ospf authentication message-digest
  ip ospf message-digest-key 1 md5 ${OSPF_PASS}
- ip ospf bfd
+${OSPF_BFD_LINE}
  ip ospf mtu-ignore
  ip ospf hello-interval 1
  ip ospf dead-interval 4
  ip ospf retransmit-interval 3
 !
+EOF2
+
+    if [[ "$BFDD_AVAILABLE" -eq 1 ]]; then
+        cat >> "$FRR_OSPF" <<EOF2
 bfd
  peer ${GRE_PEER_IP}
   receive-interval 300
   transmit-interval 300
   detect-multiplier 3
 !
+EOF2
+    fi
+
+    cat >> "$FRR_OSPF" <<'EOF2'
 line vty
 !
 EOF2
 
     # Права важны: на некоторых сборках FRR не стартует, если конфиги не читаются пользователем frr.
-    chown -R frr:frr /etc/frr 2>/dev/null || true
-    chmod 640 "$FRR_OSPF" "$FRR_DAEMONS" 2>/dev/null || true
+    if id -u frr >/dev/null 2>&1 && getent group frr >/dev/null 2>&1; then
+        chown -R frr:frr /etc/frr 2>/dev/null || true
+        chmod 640 "$FRR_OSPF" "$FRR_DAEMONS" 2>/dev/null || true
+    else
+        warn "Пользователь/группа frr не найдены — оставляю root-владельца и выставляю читаемые права"
+        chown root:root "$FRR_OSPF" "$FRR_DAEMONS" 2>/dev/null || true
+        chmod 644 "$FRR_OSPF" "$FRR_DAEMONS" 2>/dev/null || true
+    fi
 
     # Drop-in: FRR ждёт появления gre1 и перезапускается вместе с сетью
     # (PartOf=network.service), чтобы ospfd переинициализировался на новом
@@ -430,7 +494,11 @@ EOF2
     FRR_STARTED=0
     systemctl daemon-reload 2>/dev/null || true
     systemctl unmask frr 2>/dev/null || true
-    systemctl enable frr 2>/dev/null || true
+    for i in $(seq 1 30); do
+        ip link show gre1 >/dev/null 2>&1 && break
+        sleep 1
+    done
+    systemctl enable --now frr 2>/dev/null || true
 
     if systemctl restart frr 2>/dev/null && systemctl is-active --quiet frr 2>/dev/null; then
         FRR_STARTED=1
@@ -443,15 +511,38 @@ EOF2
     if [[ "$FRR_STARTED" -eq 1 ]]; then
         ok "OSPF (FRR) настроен и сервис frr активен, router-id=${OSPF_ROUTER_ID}"
         STATUS["ospf"]="OK"
+        if command -v vtysh &>/dev/null; then
+            OSPF_NEI_OK=0
+            for i in $(seq 1 60); do
+                OSPF_NEI_OUT="$(vtysh -c 'show ip ospf neighbor' 2>/dev/null || true)"
+                if echo "$OSPF_NEI_OUT" | grep -Eq '10\.0\.0\.1.*Full|Full.*10\.0\.0\.1'; then
+                    OSPF_NEI_OK=1
+                    break
+                fi
+                sleep 1
+            done
+            if [[ "$OSPF_NEI_OK" -eq 1 ]]; then
+                ok "OSPF сосед с HQ-RTR (10.0.0.1) в состоянии Full"
+                STATUS["ospf_neighbor"]="OK"
+            else
+                warn "OSPF сосед 10.0.0.1 не перешёл в Full за 60 секунд"
+                STATUS["ospf_neighbor"]="ERROR"
+            fi
+        else
+            warn "vtysh не найден — пропускаю проверку OSPF-соседа"
+            STATUS["ospf_neighbor"]="SKIP"
+        fi
     else
         error "FRR не запустился: проверьте вывод ниже и /etc/frr/frr.conf"
         systemctl status frr --no-pager -l 2>/dev/null || true
         journalctl -u frr -n 50 --no-pager 2>/dev/null || true
+        warn "Подсказка: проверьте gre1, multicast и OSPF вручную:"
+        warn "  ip -d link show gre1"
+        warn "  vtysh -c 'show ip ospf neighbor'"
+        warn "  ping -c1 10.0.0.1"
         STATUS["ospf"]="ERROR"
+        STATUS["ospf_neighbor"]="ERROR"
     fi
-else
-    warn "FRR не найден, пропускаю настройку OSPF"
-    STATUS["ospf"]="SKIP"
 fi
 
 # ─── 10. Пользователь net_admin (задание 3) ───────────────────────────────────
@@ -474,7 +565,7 @@ echo
 echo "============================================================"
 echo "  Итог настройки BR-RTR (Альт Сервер — etcnet)"
 echo "============================================================"
-for key in hostname timezone ip_forward ip_wan ip_lan nat gre_tunnel gre_multicast ospf net_admin; do
+for key in hostname timezone ip_forward ip_wan ip_lan nat gre_tunnel gre_multicast ospf ospf_neighbor net_admin; do
     val="${STATUS[$key]:-SKIP}"
     case "$val" in
         OK)    echo -e "  ${GREEN}[OK]${NC}    $key" ;;
