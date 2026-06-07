@@ -355,7 +355,7 @@ else
     info "FRR не найден, пробую офлайн-установку..."
     OFFLINE_FRR_DIR=""
     for dir in /root/pkgs /root/pkgs/br-rtr /tmp/offline_pkgs/br-rtr; do
-        if compgen -G "${dir}/*.rpm" >/dev/null 2>&1; then
+        if [[ -d "$dir" ]] && compgen -G "${dir}/*.rpm" >/dev/null 2>&1; then
             OFFLINE_FRR_DIR="$dir"
             break
         fi
@@ -363,8 +363,10 @@ else
 
     if [[ -n "$OFFLINE_FRR_DIR" ]]; then
         info "Пробую установить FRR из локальных пакетов: ${OFFLINE_FRR_DIR}"
-        apt-get install -y "${OFFLINE_FRR_DIR}"/*.rpm >/dev/null 2>&1 || \
-        rpm -Uvh --nodeps "${OFFLINE_FRR_DIR}"/*.rpm >/dev/null 2>&1 || true
+        if ! apt-get install -y "${OFFLINE_FRR_DIR}"/*.rpm >/dev/null 2>&1; then
+            rpm -Uvh --nodeps "${OFFLINE_FRR_DIR}"/*.rpm >/dev/null 2>&1 || true
+            apt-get install -f -y >/dev/null 2>&1 || true
+        fi
     else
         warn "Локальные .rpm для FRR не найдены (/root/pkgs, /root/pkgs/br-rtr, /tmp/offline_pkgs/br-rtr)"
     fi
@@ -413,6 +415,8 @@ else
     else
         GRE_PEER_IP="${GRE_PREFIX}.$((GRE_LAST - 1))"
     fi
+    OSPF_NEIGHBOR_IP="$GRE_PEER_IP"
+    OSPF_NEIGHBOR_IP_ESC="${OSPF_NEIGHBOR_IP//./\\.}"
 
     OSPF_BFD_LINE=""
     if [[ "$BFDD_AVAILABLE" -eq 1 ]]; then
@@ -494,10 +498,17 @@ EOF2
     FRR_STARTED=0
     systemctl daemon-reload 2>/dev/null || true
     systemctl unmask frr 2>/dev/null || true
+    # Ждём gre1 перед стартом FRR: без интерфейса ospfd иногда не поднимает соседство после restart network.
+    info "Ожидаю появления gre1 перед запуском FRR..."
+    GRE1_READY=0
     for i in $(seq 1 30); do
-        ip link show gre1 >/dev/null 2>&1 && break
+        if ip link show gre1 >/dev/null 2>&1; then
+            GRE1_READY=1
+            break
+        fi
         sleep 1
     done
+    [[ "$GRE1_READY" -eq 1 ]] || warn "gre1 не появился за 30 секунд, продолжаю запуск FRR (детали будут выведены при ошибке старта)"
     systemctl enable --now frr 2>/dev/null || true
 
     if systemctl restart frr 2>/dev/null && systemctl is-active --quiet frr 2>/dev/null; then
@@ -513,19 +524,20 @@ EOF2
         STATUS["ospf"]="OK"
         if command -v vtysh &>/dev/null; then
             OSPF_NEI_OK=0
-            for i in $(seq 1 60); do
+            OSPF_NEIGHBOR_WAIT_SECONDS=60
+            for i in $(seq 1 "$OSPF_NEIGHBOR_WAIT_SECONDS"); do
                 OSPF_NEI_OUT="$(vtysh -c 'show ip ospf neighbor' 2>/dev/null || true)"
-                if echo "$OSPF_NEI_OUT" | grep -Eq '10\.0\.0\.1.*Full|Full.*10\.0\.0\.1'; then
+                if echo "$OSPF_NEI_OUT" | grep -Eq "${OSPF_NEIGHBOR_IP_ESC}.*Full|Full.*${OSPF_NEIGHBOR_IP_ESC}"; then
                     OSPF_NEI_OK=1
                     break
                 fi
                 sleep 1
             done
             if [[ "$OSPF_NEI_OK" -eq 1 ]]; then
-                ok "OSPF сосед с HQ-RTR (10.0.0.1) в состоянии Full"
+                ok "OSPF сосед с HQ-RTR (${OSPF_NEIGHBOR_IP}) в состоянии Full"
                 STATUS["ospf_neighbor"]="OK"
             else
-                warn "OSPF сосед 10.0.0.1 не перешёл в Full за 60 секунд"
+                warn "OSPF сосед ${OSPF_NEIGHBOR_IP} не перешёл в Full за ${OSPF_NEIGHBOR_WAIT_SECONDS} секунд"
                 STATUS["ospf_neighbor"]="ERROR"
             fi
         else
@@ -539,7 +551,7 @@ EOF2
         warn "Подсказка: проверьте gre1, multicast и OSPF вручную:"
         warn "  ip -d link show gre1"
         warn "  vtysh -c 'show ip ospf neighbor'"
-        warn "  ping -c1 10.0.0.1"
+        warn "  ping -c1 ${OSPF_NEIGHBOR_IP:-10.0.0.1}"
         STATUS["ospf"]="ERROR"
         STATUS["ospf_neighbor"]="ERROR"
     fi
