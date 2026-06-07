@@ -488,21 +488,23 @@ After=network.target network.service gre-multicast.service
 Wants=gre-multicast.service
 
 [Service]
-ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do ip link show gre1 >/dev/null 2>&1 && break; sleep 1; done; ip link set gre1 mtu 1400 multicast on || true'
+# Не даём systemd ждать FRR бесконечно
+TimeoutStartSec=30
+ExecStartPre=/bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do ip link show gre1 >/dev/null 2>&1 && break; sleep 1; done; ip link set gre1 mtu 1400 multicast on || true'
 EOF2
 
     FRR_STARTED=0
     systemctl daemon-reload 2>/dev/null || true
     systemctl unmask frr 2>/dev/null || true
-    for i in $(seq 1 30); do
+    for i in 1 2 3 4 5 6 7 8 9 10; do
         ip link show gre1 >/dev/null 2>&1 && break
         sleep 1
     done
-    systemctl enable --now frr 2>/dev/null || true
+    systemctl enable frr 2>/dev/null || true
 
-    if systemctl restart frr 2>/dev/null && systemctl is-active --quiet frr 2>/dev/null; then
+    if timeout 40 systemctl restart frr 2>/dev/null && systemctl is-active --quiet frr 2>/dev/null; then
         FRR_STARTED=1
-    elif service frr restart 2>/dev/null; then
+    elif timeout 40 service frr restart 2>/dev/null; then
         if systemctl is-active --quiet frr 2>/dev/null || pgrep -x zebra >/dev/null 2>&1 || pgrep -x ospfd >/dev/null 2>&1; then
             FRR_STARTED=1
         fi
@@ -513,7 +515,7 @@ EOF2
         STATUS["ospf"]="OK"
         if command -v vtysh &>/dev/null; then
             OSPF_NEI_OK=0
-            for i in $(seq 1 60); do
+            for i in $(seq 1 30); do
                 OSPF_NEI_OUT="$(vtysh -c 'show ip ospf neighbor' 2>/dev/null || true)"
                 if echo "$OSPF_NEI_OUT" | grep -Eq '10\.0\.0\.1.*Full|Full.*10\.0\.0\.1'; then
                     OSPF_NEI_OK=1
@@ -525,7 +527,7 @@ EOF2
                 ok "OSPF сосед с HQ-RTR (10.0.0.1) в состоянии Full"
                 STATUS["ospf_neighbor"]="OK"
             else
-                warn "OSPF сосед 10.0.0.1 не перешёл в Full за 60 секунд"
+                warn "OSPF сосед 10.0.0.1 не перешёл в Full за 30 секунд"
                 STATUS["ospf_neighbor"]="ERROR"
             fi
         else
