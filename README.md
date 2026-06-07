@@ -189,8 +189,21 @@ sudo bash scripts/br_rtr_setup.sh
 (на `gre1` ускоренные таймеры hello/dead 1/4 для быстрого восстановления
 соседства после `systemctl restart network`; FRR также перезапускается вместе
 с сетью, чтобы `ospfd` заново инициализировался на новом `gre1`; дополнительно
-включены OSPF graceful-restart (NSF) и BFD для сохранения маршрутов/устойчивости
-при `systemctl restart network`), NAT через iptables, пользователь `net_admin`.
+включены OSPF graceful-restart (NSF), а BFD включается только если в системе
+доступен `bfdd`), NAT через iptables, пользователь `net_admin`.
+Скрипт гарантирует попытку установки FRR сначала из офлайн-пакетов (`/root/pkgs`,
+`/root/pkgs/br-rtr`, `/tmp/offline_pkgs/br-rtr`), затем из сетевого репозитория,
+и в конце активно проверяет поднятие OSPF-соседа `10.0.0.1` (до 60 секунд).
+
+#### Troubleshooting: FRR на BR-RTR неактивен / нет OSPF-соседа / нет пинга HQ-CLI → BR-SRV
+```bash
+systemctl status frr --no-pager -l
+journalctl -u frr -n 50 --no-pager
+rpm -q frr
+vtysh -c 'show ip ospf neighbor'
+ip -d link show gre1
+ping -c1 10.0.0.1
+```
 
 #### `scripts/hq_srv_setup.sh` — настройка HQ-SRV
 ```bash
