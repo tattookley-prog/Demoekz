@@ -322,11 +322,10 @@ info "Настройка systemd-сервиса gre-multicast.service (persist m
 cat > /etc/systemd/system/gre-multicast.service <<'EOF2'
 [Unit]
 Description=Enable multicast on gre1 for OSPF
-# PartOf + After network.service: сервис срабатывает и при systemctl restart network,
-# а не только при загрузке — иначе после рестарта сети gre1 остаётся без multicast.
+# PartOf=network.service распространяет restart/stop вместе с сетью,
+# но НЕ создаёт ordering cycle (в отличие от завязки на network.target).
 PartOf=network.service
-Wants=network.target
-After=network.target network.service
+After=network.service
 
 [Service]
 Type=oneshot
@@ -334,7 +333,7 @@ RemainAfterExit=yes
 ExecStart=/bin/sh -c 'for i in $(seq 1 30); do ip link show gre1 >/dev/null 2>&1 && break; sleep 1; done; ip link set gre1 mtu 1400; ip link set gre1 multicast on'
 
 [Install]
-WantedBy=multi-user.target network.service
+WantedBy=multi-user.target
 EOF2
 systemctl daemon-reload 2>/dev/null || true
 systemctl enable gre-multicast.service 2>/dev/null || true
@@ -484,7 +483,7 @@ EOF2
     cat > /etc/systemd/system/frr.service.d/after-network.conf <<'EOF2'
 [Unit]
 PartOf=network.service
-After=network.target network.service gre-multicast.service
+After=network.service gre-multicast.service
 Wants=gre-multicast.service
 
 [Service]
