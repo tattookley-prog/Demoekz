@@ -33,6 +33,9 @@ save_static_ip_etcnet() {
 BOOTPROTO=static
 ONBOOT=yes
 TYPE=eth
+DISABLED=no
+NM_CONTROLLED=no
+CONFIG_IPV4=yes
 EOF
 
     # ipv4address — статический адрес с маской
