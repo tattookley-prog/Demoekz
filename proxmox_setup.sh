@@ -58,6 +58,11 @@ validate_snap_name() {
         die "Имя снапшота может содержать только буквы, цифры, '-' и '_' (получено: $1)"
 }
 
+validate_pve_userid() {
+    [[ "$1" =~ ^[a-zA-Z0-9_\.\-]+@[a-zA-Z0-9_\-]+$ ]] || \
+        die "Неверный формат userid (ожидается user@realm, например admin@pve): $1"
+}
+
 # ---------------------------------------------------------------------------
 # Раздел: Информация об узле
 # ---------------------------------------------------------------------------
@@ -231,6 +236,80 @@ show_network() {
 }
 
 # ---------------------------------------------------------------------------
+# Раздел: Управление пользователями PVE
+# ---------------------------------------------------------------------------
+manage_users() {
+    while true; do
+        info "=== Управление пользователями PVE ==="
+        echo "1) Список пользователей"
+        echo "2) Создать пользователя"
+        echo "3) Изменить пароль пользователя"
+        echo "4) Назначить роль пользователю"
+        echo "5) Удалить пользователя"
+        echo "6) Назад"
+        read -r -p "Выберите пункт: " OPT
+
+        case "$OPT" in
+            1)
+                info "Список пользователей PVE:"
+                pveum user list || warn "Не удалось получить список пользователей."
+                press_enter
+                ;;
+            2)
+                read -r -p "Имя пользователя (формат user@realm, например newuser@pve): " USERID
+                validate_pve_userid "$USERID"
+                read -r -s -p "Пароль: " PASS1; echo
+                [[ ${#PASS1} -ge 8 ]] || die "Пароль должен содержать не менее 8 символов."
+                read -r -s -p "Повторите пароль: " PASS2; echo
+                [[ "$PASS1" == "$PASS2" ]] || die "Пароли не совпадают."
+                read -r -p "Комментарий (необязательно): " COMMENT
+                pveum user add "$USERID" --password "$PASS1" ${COMMENT:+--comment "$COMMENT"} && \
+                    success "Пользователь ${USERID} создан."
+                press_enter
+                ;;
+            3)
+                read -r -p "Имя пользователя (формат user@realm): " USERID
+                validate_pve_userid "$USERID"
+                read -r -s -p "Новый пароль: " PASS1; echo
+                [[ ${#PASS1} -ge 8 ]] || die "Пароль должен содержать не менее 8 символов."
+                read -r -s -p "Повторите пароль: " PASS2; echo
+                [[ "$PASS1" == "$PASS2" ]] || die "Пароли не совпадают."
+                pveum passwd "$USERID" --password "$PASS1" && \
+                    success "Пароль пользователя ${USERID} изменён."
+                press_enter
+                ;;
+            4)
+                read -r -p "Имя пользователя (формат user@realm): " USERID
+                validate_pve_userid "$USERID"
+                info "Доступные роли:"
+                pveum role list 2>/dev/null || true
+                read -r -p "Роль (например, PVEVMAdmin): " ROLE
+                [[ "$ROLE" =~ ^[a-zA-Z0-9_\-]+$ ]] || die "Недопустимое имя роли: $ROLE"
+                read -r -p "Путь (например, / или /vms): " ACL_PATH
+                [[ "$ACL_PATH" =~ ^/ ]] || die "Путь ACL должен начинаться с '/' (получено: $ACL_PATH)"
+                pveum acl modify "$ACL_PATH" --users "$USERID" --roles "$ROLE" && \
+                    success "Роль ${ROLE} назначена пользователю ${USERID} на пути ${ACL_PATH}."
+                press_enter
+                ;;
+            5)
+                read -r -p "Имя пользователя для удаления (формат user@realm): " USERID
+                validate_pve_userid "$USERID"
+                warn "Удалить пользователя ${USERID}? Это действие необратимо. (y/N)"
+                read -r CONFIRM
+                if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+                    pveum user delete "$USERID" && success "Пользователь ${USERID} удалён."
+                else
+                    info "Удаление отменено."
+                fi
+                press_enter
+                ;;
+            6) return ;;
+            *) warn "Неверный выбор." ; sleep 1 ;;
+        esac
+    done
+}
+
+# ---------------------------------------------------------------------------
 # Раздел: Обновление Proxmox
 # ---------------------------------------------------------------------------
 update_proxmox() {
@@ -267,6 +346,7 @@ main_menu() {
         echo "  6) Состояние хранилища"
         echo "  7) Сетевые настройки"
         echo "  8) Обновить Proxmox"
+        echo "  9) Управление пользователями PVE"
         echo "  0) Выход"
         echo
         read -r -p "Выберите действие: " CHOICE
@@ -280,6 +360,7 @@ main_menu() {
             6) show_storage ;;
             7) show_network ;;
             8) update_proxmox ;;
+            9) manage_users ;;
             0) info "Выход."; exit 0 ;;
             *) warn "Неверный выбор. Повторите." ; sleep 1 ;;
         esac
